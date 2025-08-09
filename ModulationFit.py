@@ -1,3 +1,5 @@
+# Written by Isabella Sanford
+
 import numpy as np
 from scipy.optimize import curve_fit
 import argparse
@@ -26,7 +28,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--polarized", required=True, help="Path to polarized phi values .txt file")
     parser.add_argument("--unpolarized", required=True, help="Path to unpolarized phi values .txt file")
-    parser.add_argument('--layers', type=int, default=2, help='Number of tracker layers to define a vertex')
     args = parser.parse_args()
 
     # Getting the polarized and unpolarized phi values
@@ -97,28 +98,3 @@ if __name__ == "__main__":
     plt.legend()
     plt.tight_layout()
     plt.show()
-
-    
-
-
-# look at the plots for varying energies and orientations
-# start below 10MeV (run more than 100,000 Ntriggers for below 10MeV and 30MeV - look at errorbars on plots to see how many)
-# far field source (theta)(phi) check phi @ one energy (theta should change more)
-# also explore polarization angle
-
-# start with energy and theta -> relative X and do on-axis so we know all are along -y (then change theta and phi)
-# 10MeV, 31.6(...) MeV (sqrt 10), 100MeV (then 18 and 56 -> roughly)
-
-
-# have fun looking at costheta scale -> can also just run simulations with different theta values stop just before 80 -> simulate to 45-60 ish and look at modulation to see if we can keep going
-
-
-# make new pair events file that combines output from multi core processed sim files
-
-# keep in mind distance between e- and e+ in adj layer
-# can mess w stopping after finding first vertex in vIDandpplotting
-# in vIDandplotting clarify what is happening if there is (for ex) one hit in a layer and then wo in the next and then one in the next OR something like one hit and then one hit and then two
-
-
-# total vertex used/ total trigger events -> see bernard plots
-# do diff source
