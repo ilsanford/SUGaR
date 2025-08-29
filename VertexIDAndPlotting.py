@@ -1,4 +1,16 @@
 '''
+Copyright (C) 2025  Isabella Sanford
+
+This library is free software; you can redistribute it and/or
+modify it under the terms of the GNU Lesser General Public
+License as published by the Free Software Foundation; either
+version 2.1 of the License, or (at your option) any later version.
+
+A copy of the GNU Lesser General Public License is located in the
+repository as LICENSE.md.
+'''
+
+'''
 This file is separated into functions and classes:
     (a) Vertex class: defines properties of the vertex (position, ID, adjacent hits in the layer below, and the azimuthal angle)
     (b) Functions:
