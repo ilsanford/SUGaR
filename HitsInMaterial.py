@@ -1,5 +1,7 @@
 import ROOT as M
 import argparse
+import sys
+import os
 
 # Loading MEGAlib
 M.gSystem.Load("$(MEGALIB)/lib/libMEGAlib.so")
@@ -13,22 +15,34 @@ if Geometry.ScanSetupFile(M.MString(GeometryName)):
     print("Geometry " + GeometryName + " loaded!")
 else:
     print("Unable to load geometry " + GeometryName + " - Aborting!")
-    quit()
+    sys.exit(1)
 
 # Reading in the sim file
-parser = argparse.ArgumentParser()
-parser.add_argument("simfile")
+parser = argparse.ArgumentParser(description='Write pair-conversion material info from sim file')
+parser.add_argument("simfile", help='Path to the input sim file')
+parser.add_argument("--outputfile", default=None, help="Output text file with Event ID and material information (default: <simfile>_MaterialInfo.txt)")
 args = parser.parse_args()
+
 simfile = args.simfile
-parser.add_argument("--outputfile", default="unpolarized_pair_events.txt", help="Output text file with Event ID and material information")
-args = parser.parse_args()
+
+# Build default output filename from the input filename if not provided
+if args.outputfile:
+    outputfile = args.outputfile
+else:
+    base = os.path.basename(simfile)
+    if base.endswith('.gz'):
+        base = base[:-7]
+    if base.endswith('.sim'):
+        base = base[:-4]
+    outputfile = f"{base}_MaterialInfo.txt"
 
 # Setting up a dictionary to store the counts in each material
 counts_in_material = {}
 
 Reader = M.MFileEventsSim(Geometry)
 if not Reader.Open(M.MString(simfile)):
-    print(f"Failed to open {simfile}"); quit()
+    print(f"Failed to open {simfile}")
+    sys.exit(1)
 
 while (Event := Reader.GetNextEvent()):
     M.SetOwnership(Event, True)
@@ -50,11 +64,13 @@ while (Event := Reader.GetNextEvent()):
                 counts_in_material[material_name] = counts_in_material.get(material_name, 0) + 1
 Reader.Close()
 
+# Re-open the reader to iterate again and write out event to material mapping
 if not Reader.Open(M.MString(simfile)):
-    print(f"Failed to open {simfile}"); quit()
+    print(f"Failed to open {simfile}")
+    sys.exit(1)
 
 # Open file for writing
-with open(args.outputfile, "w") as fout:
+with open(outputfile, "w") as fout:
     fout.write("# EventID Material\n")
 
     while (Event := Reader.GetNextEvent()):
@@ -89,5 +105,5 @@ print(f"Total conversions: {total}")
 for mat, count in sorted(counts_in_material.items(), key=lambda x: -x[1]):
     print(f"{mat}: {count}")
 
-print(f"Done. Events saved to {args.outputfile}")
+print(f"Done. Events saved to {outputfile}")
 
