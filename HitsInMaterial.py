@@ -44,26 +44,38 @@ if not Reader.Open(M.MString(simfile)):
     print(f"Failed to open {simfile}")
     sys.exit(1)
 
-while (Event := Reader.GetNextEvent()):
-    M.SetOwnership(Event, True)
-    for i in range(Event.GetNIAs()):
-        IA = Event.GetIAAt(i)
-        # Selecting only the pair processes in the sim file
-        if IA.GetProcess() != "PAIR":
-            continue
+counter = 0
+with open(outputfile, "w") as fout:
+    fout.write("# EventID Material\n")
+
+    while (Event := Reader.GetNextEvent()):
+        M.SetOwnership(Event, True)
+        for i in range(1,2):
+
+            IA = Event.GetIAAt(i)
+            counter += 1
+            if counter % 10000 == 0:
+                print(f"At event ID: {Event.GetID()}")
+
+            # Selecting only the pair processes in the sim file
+            if IA.GetProcess() != "PAIR":
+                continue
+            
+            # Extracting the poistion of the pair conversion and its associated volume
+            pos = IA.GetPosition()            
+            volume = Geometry.GetVolume(pos)
+
+            # For the volume, determine the material and increase the count
+            if volume:
+                mat = volume.GetMaterial()
+                if mat:
+                    material_name = mat.GetName().ToString()
+                    counts_in_material[material_name] = counts_in_material.get(material_name, 0) + 1
+           
+                    fout.write(f"{Event.GetID()} {material_name}\n")
         
-        # Extracting the poistion of the pair conversion and its associated volume
-        pos = IA.GetPosition()            
-        volume = Geometry.GetVolume(pos)
-
-        # For the volume, determine the material and increase the count
-        if volume:
-            mat = volume.GetMaterial()
-            if mat:
-                material_name = mat.GetName().ToString()
-                counts_in_material[material_name] = counts_in_material.get(material_name, 0) + 1
 Reader.Close()
-
+'''
 # Re-open the reader to iterate again and write out event to material mapping
 if not Reader.Open(M.MString(simfile)):
     print(f"Failed to open {simfile}")
@@ -78,7 +90,7 @@ with open(outputfile, "w") as fout:
         EventID = Event.GetID()
 
         # Loop over interaction points in this event
-        for i in range(Event.GetNIAs()):
+        for i in range(1,2):
             IA = Event.GetIAAt(i)
             if IA.GetProcess() != "PAIR":
                 continue
@@ -97,7 +109,7 @@ with open(outputfile, "w") as fout:
             fout.write(f"{EventID} {material_name}\n")
             break  
 Reader.Close()
-
+'''
 # Print results for each material in the terminal
 print("---- Pair Conversions by Material ----")
 total = sum(counts_in_material.values())
@@ -107,3 +119,5 @@ for mat, count in sorted(counts_in_material.items(), key=lambda x: -x[1]):
 
 print(f"Done. Events saved to {outputfile}")
 
+# move the output writing into first loop
+# make sure there is no double counting -> CsI -> first pair production - why is the modulation clean?
