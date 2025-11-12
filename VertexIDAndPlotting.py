@@ -1,16 +1,4 @@
 '''
-Copyright (C) 2025  Isabella Sanford
-
-This library is free software; you can redistribute it and/or
-modify it under the terms of the GNU Lesser General Public
-License as published by the Free Software Foundation; either
-version 2.1 of the License, or (at your option) any later version.
-
-A copy of the GNU Lesser General Public License is located in the
-repository as LICENSE.md.
-'''
-
-'''
 This file is separated into functions and classes:
     (a) Vertex class: defines properties of the vertex (position, ID, adjacent hits in the layer below, and the azimuthal angle)
     (b) Functions:
@@ -115,15 +103,7 @@ class Vertex:
         # ------------------------------
         # Construct initial photon direction from theta and phi
         # ------------------------------
-        theta_rad = np.deg2rad(theta)
-        phi_rad = np.deg2rad(phi)
-
-        x = np.sin(theta_rad) * np.cos(phi_rad)
-        y = np.sin(theta_rad) * np.sin(phi_rad)
-        z = np.cos(theta_rad)
-
-        initial_direction_full = np.array([x, y, z])
-        init_dir = initial_direction_full / np.linalg.norm(initial_direction_full)
+        init_dir = initial_vector_function(theta, phi)
 
         # ------------------------------
         # Project reference axis into photon frame
@@ -152,6 +132,30 @@ class Vertex:
 '''
 FUNCTIONS TO DETERMINE ELECTRON/POSITRON HITS
 '''
+def initial_vector_function(theta, phi):
+    # ------------------------------
+    # Computes the vector for the initial direction of the
+    # incoming gamma-ray using theta and phi.
+
+    # Parameters:
+    #    theta (float): Off-axis angle theta in degrees.
+    #    phi (float): Phi angle in degrees.
+
+    # Returns:
+    #    np.ndarray: init_dir unit direction vector.
+    # ------------------------------
+    theta_rad = np.deg2rad(theta)
+    phi_rad = np.deg2rad(phi)
+    init_dir = np.array([
+        np.sin(theta_rad) * np.cos(phi_rad),
+        np.sin(theta_rad) * np.sin(phi_rad),
+        np.cos(theta_rad)
+    ])
+
+    init_dir /= np.linalg.norm(init_dir)
+
+    return init_dir
+
 def project_to_layer(init_pos, init_dir, z_target):
 
     # ------------------------------
@@ -419,14 +423,7 @@ class VertexFinder:
                         candidate.GetPosition().Z()
                     ])
 
-                    theta_rad = np.deg2rad(theta)
-                    phi_rad = np.deg2rad(phi)
-
-                    x = np.sin(theta_rad) * np.cos(phi_rad)
-                    y = np.sin(theta_rad) * np.sin(phi_rad)
-                    z = np.cos(theta_rad)
-
-                    init_dir = np.array([x,y,z])/np.linalg.norm(np.array([x, y, z]))
+                    init_dir = initial_vector_function(theta, phi)
 
                     # Move to the layer below candidate vertex and project virtual point on that layer
                     z_target = candidate.GetPosition().Z() - interlayerdistance
@@ -858,6 +855,7 @@ def polarfit(x, A, phi0, N):
 
     return N / (2 * np.pi) * (1 - A * np.cos(2 * (x - phi0)))
 
+
 '''
 MAIN FUNCTION FOR EXECUTION IN TERMINAL
 '''
@@ -884,7 +882,8 @@ if __name__ == "__main__":
     parser.add_argument('--theta', type=float, default=0.0, help='Polar angle theta (in degrees) of the incoming gamma-ray (default: 0 degrees)')
     parser.add_argument('--phi', type=float, default=0.0, help='Azimuthal angle phi (in degrees) of the incoming gamma-ray (default: 0 degrees)')
     parser.add_argument('--plot-distance-dist', action='store_true', help='Plot distance distribution of hits relative to virtual hit in the layer below vertex')
-    
+    parser.add_argument('--modulation-fit', action='store_true', help='Enable modulation fit plot')
+
     # Loading in the required geometry (AMEGO-X for this analysis)
     GeometryName = "../../MEGAlib_Data/Geometry/AMEGO_Midex/AmegoXBase.geo.setup"
     Geometry = M.MGeometryRevan()
@@ -893,7 +892,6 @@ if __name__ == "__main__":
     else:
         print("Unable to load geometry " + GeometryName + " - Aborting!")
         quit()
-
 
     args = parser.parse_args()
 
@@ -958,7 +956,7 @@ if __name__ == "__main__":
         Vertices = VF.FindVertices(ClusteredRE, theta=args.theta, phi=args.phi)
         VertexDict[RE.GetEventID()] = Vertices 
 
-        if Vertices and args.plot_distance_dist: # CHANGE
+        if Vertices:
             EP = EventPlotting(inputfile, Geometry=Geometry)
             HTXPosition, HTYPosition, HTZPosition = EP.GetSimHits()
 
@@ -968,13 +966,8 @@ if __name__ == "__main__":
             hits_below = get_hits_in_layer_below(RE.GetEventID(), vertex_z, HTXPosition, HTYPosition, HTZPosition)
 
             # Projected point -> make function
-            theta_rad = np.radians(args.theta)
-            phi_rad = np.radians(args.phi)
-            init_dir = np.array([
-                np.sin(theta_rad) * np.cos(phi_rad),
-                np.sin(theta_rad) * np.sin(phi_rad),
-                np.cos(theta_rad)
-            ])
+            init_dir = initial_vector_function(args.theta, args.phi)
+            
             init_pos = np.array([
                 top_vertex.GetPosition()[0],
                 top_vertex.GetPosition()[1],
@@ -984,13 +977,18 @@ if __name__ == "__main__":
             z_target = vertex_z - 1.5 # cm (interlayer distance)
             projected_point = project_to_layer(init_pos, init_dir, z_target)
 
-            # Plot distribution 
-            for hit in hits_below:
-                distance = distance_to_virtual(hit, projected_point)
-                all_distances_to_virtual.append(distance)
+            '''
+            if args.plot_distance_dist:
+                # Plot distribution 
+                for hit in hits_below:
+                    distance = distance_to_virtual(hit, projected_point)
+                    all_distances_to_virtual.append(distance)
 
-                if distance < 5.0:
-                    passing_distances.append(distance)
+                    if distance < 5.0:
+                        passing_distances.append(distance)
+            else: 
+                pass
+            '''
             
             phi = top_vertex.ComputePhi(theta = args.theta, phi = args.phi, hit1=top_vertex.AllRESEs[0], hit2=top_vertex.AllRESEs[1], ref_direction = args.ref_dir)
             #if phi is not None:
@@ -1026,6 +1024,14 @@ if __name__ == "__main__":
 
     if args.plot_distance_dist and all_distances_to_virtual:
 
+        # Plot distribution 
+        for hit in hits_below:
+            distance = distance_to_virtual(hit, projected_point)
+            all_distances_to_virtual.append(distance)
+
+            if distance < 5.0:
+                passing_distances.append(distance)
+
         plt.hist(passing_distances, bins=50, color='skyblue', edgecolor='black')
         plt.xlabel('Distance to virtual point (cm)')
         plt.ylabel('Counts')
@@ -1045,7 +1051,7 @@ if __name__ == "__main__":
 
     print(f"Scanned {EventCount} events")
 
-    if phi_values:
+    if phi_values and args.modulation_fit:
         plt.figure(figsize=(8, 5))
         plt.hist(phi_values, bins=np.linspace(-np.pi, np.pi, 17), range=(-np.pi, np.pi), edgecolor='black', density=True)
         plt.xlabel(r"Azimuthal angle $\phi$")
@@ -1107,7 +1113,7 @@ if __name__ == "__main__":
         print(f"Plotting {len(SharedEventID)} events with both simulated and clustered data")
                 
         if args.plot_eventID is not None:
-            event_id_to_plot = args.eventID
+            event_id_to_plot = args.plot_eventID
             print(f"Plotting event with Event ID {event_id_to_plot}")
             EP.PlottingSimAndRESEs(event_id_to_plot, HTX, HTY, HTZ, RESEHits, VertexDict.get(event_id_to_plot, []), MCPoints=MCPoints)
 

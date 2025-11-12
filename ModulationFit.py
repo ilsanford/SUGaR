@@ -1,14 +1,4 @@
-'''
-Copyright (C) 2025  Isabella Sanford
-
-This library is free software; you can redistribute it and/or
-modify it under the terms of the GNU Lesser General Public
-License as published by the Free Software Foundation; either
-version 2.1 of the License, or (at your option) any later version.
-
-A copy of the GNU Lesser General Public License is located in the
-repository as LICENSE.md.
-'''
+# Written by Isabella Sanford
 
 import numpy as np
 from scipy.optimize import curve_fit
@@ -23,7 +13,6 @@ def polarfit(x, A, phi0, N):
 def GetPhiValues(filepath):
     phi_values = []
     with open(filepath, 'r') as f:
-        next(f)  # skip header
         for line in f:
             parts = line.strip().split(' ')
             phi = float(parts[0])
@@ -61,7 +50,7 @@ if __name__ == "__main__":
     plt.hist(phi_unpolarized, bins=bins, alpha=0.5, label="Unpolarized")
     plt.xlabel(r"Azimuthal angle $\phi$ [rad]")
     plt.ylabel("Counts")
-    plt.title("Azimuthal Angle Distributions")
+    plt.title("30MeV on-axis 3.6 million triggers - Copper")
     plt.legend()
     plt.tight_layout()
     plt.show()
