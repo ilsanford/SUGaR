@@ -26,7 +26,7 @@ def GetPhiValues(filepath):
         next(f)  # skip header
         for line in f:
             parts = line.strip().split(' ')
-            phi = float(parts[1])
+            phi = float(parts[0])
             phi_values.append(phi)
     return phi_values
 

@@ -75,41 +75,7 @@ with open(outputfile, "w") as fout:
                     fout.write(f"{Event.GetID()} {material_name}\n")
         
 Reader.Close()
-'''
-# Re-open the reader to iterate again and write out event to material mapping
-if not Reader.Open(M.MString(simfile)):
-    print(f"Failed to open {simfile}")
-    sys.exit(1)
 
-# Open file for writing
-with open(outputfile, "w") as fout:
-    fout.write("# EventID Material\n")
-
-    while (Event := Reader.GetNextEvent()):
-        M.SetOwnership(Event, True)
-        EventID = Event.GetID()
-
-        # Loop over interaction points in this event
-        for i in range(1,2):
-            IA = Event.GetIAAt(i)
-            if IA.GetProcess() != "PAIR":
-                continue
-
-            pos = IA.GetPosition()
-            volume = Geometry.GetVolume(pos)
-            if not volume:
-                continue
-            mat = volume.GetMaterial()
-            if not mat:
-                continue
-
-            material_name = mat.GetName().ToString()
-
-            # Write and stop after the first pair found
-            fout.write(f"{EventID} {material_name}\n")
-            break  
-Reader.Close()
-'''
 # Print results for each material in the terminal
 print("---- Pair Conversions by Material ----")
 total = sum(counts_in_material.values())
