@@ -129,6 +129,7 @@ while True:
     ])
 
 
+    '''
     try:
         pol_vec = np.array([
             photon_IA.GetPolarisation().X(),
@@ -137,6 +138,7 @@ while True:
         ])
     except AttributeError:
         pol_vec = np.array([0., 0., 0.])
+    '''
     
     # Need to open with Evta to cluster and such
     RE = EvtaReader.GetNextEvent()
@@ -162,6 +164,8 @@ while True:
         if len(hits) < 2:
             continue
         hit1, hit2 = hits[:2]
+
+        pol_vec = np.cross(photon_dir, np.array([1.,0.,0.]))
         phi_val = ComputePhi_RandomPol(vtx, photon_dir, pol_vec, hit1, hit2)
         if phi_val is not None:
             phi_values.append(phi_val)
