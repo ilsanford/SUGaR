@@ -364,13 +364,13 @@ class VertexFinder:
         # Sorting by depth in the tracker: shallowest -> deepest
         RESEs.sort(key=lambda rese: rese.GetPosition().Z())
 
-        for i, candidate in enumerate(RESEs):
+        for candidate in RESEs:
             # Determine if the hit is the only one in that layer
             OnlyHitInLayer = True
-            for j in RESEs:
-                if j == candidate:
+            for rese in RESEs:
+                if rese == candidate:
                     continue
-                if self.Geometry.AreInSameLayer(candidate, j):
+                if self.Geometry.AreInSameLayer(candidate, rese):
                     OnlyHitInLayer = False
                     break
             if not OnlyHitInLayer:
@@ -379,74 +379,92 @@ class VertexFinder:
             NBelow = [0] * self.SearchRange
             NAbove = [0] * self.SearchRange
 
-            for j in RESEs:
-                if j == candidate:
+            for rese in RESEs:
+                if rese == candidate:
                     continue
-                Distance = self.Geometry.GetLayerDistance(candidate, j)
-                if Distance > 0 and Distance < self.SearchRange:
+                Distance = self.Geometry.GetLayerDistance(candidate, rese)
+                if 0 < Distance < self.SearchRange:
                     NAbove[Distance] += 1
-                if Distance < 0 and abs(Distance) < self.SearchRange:
+                elif Distance < 0 and abs(Distance) < self.SearchRange:
                     NBelow[abs(Distance)] += 1
             
             # Looking for the vertex below ("inverted V")
-            if NAbove[1] == 0:
-                StartIndex = 0
-                StopIndex = 0
-                LayersWithAtLeastTwoHitsBetweenStartAndStop = 0
+            if NAbove[1] != 0:
+                continue
 
-                for Distance in range(1, self.SearchRange-1):
-                    if NBelow[Distance] == 0 and NBelow[Distance+1] == 0:
-                        break
-                    StopIndex = Distance
+            StartIndex = 0
+            StopIndex = 0
+            LayersWithAtLeastTwoHitsBetweenStartAndStop = 0
 
-                    if StartIndex ==0 and NBelow[Distance] > 1 and NBelow[Distance+1] > 1:
-                        StartIndex = Distance
+            for Distance in range(1, self.SearchRange-1):
+                if NBelow[Distance] == 0 and NBelow[Distance+1] == 0:
+                    break
+                StopIndex = Distance
+
+                if StartIndex == 0 and NBelow[Distance] > 1 and NBelow[Distance+1] > 1:
+                    StartIndex = Distance
                     
-                    if StartIndex != 0:
-                        if NBelow[Distance] >= 2:
-                            LayersWithAtLeastTwoHitsBetweenStartAndStop += 1
+                if StartIndex != 0 and NBelow[Distance] >= 2:
+                    LayersWithAtLeastTwoHitsBetweenStartAndStop += 1
 
-                for Distance in range(StopIndex, 2, -1):
-                    if NBelow[Distance-1]>= 2 and NBelow[Distance-2] >= 2:
-                        break
-                    StopIndex = Distance
+            for Distance in range(StopIndex, 2, -1):
+                if NBelow[Distance-1]>= 2 and NBelow[Distance-2] >= 2:
+                    break
+                StopIndex = Distance
 
-                interlayerdistance = 1.5 #cm (change depending on detector geometry, this is for AMEGO-X)
+            interlayerdistance = 1.5 #cm (change depending on detector geometry, this is for AMEGO-X)
 
-                # Searching through the number of layers after the layer in which the vertex is identified
-                if LayersWithAtLeastTwoHitsBetweenStartAndStop >= self.NumberOfLayers:
+            if LayersWithAtLeastTwoHitsBetweenStartAndStop < self.NumberOfLayers:
+                continue
 
-                    # Project along MC direction to the next layer
-                    init_pos = np.array([
-                        candidate.GetPosition().X(),
-                        candidate.GetPosition().Y(),
-                        candidate.GetPosition().Z()
-                    ])
+            # Search following N layers for first layer with 2+ hits
+            selected_layer_hits = None
+            selected_distance = None
 
-                    init_dir = initial_vector_function(theta, phi)
+            SearchLayers = 5 # CHANGE THIS FOR DESIRED NUMBER OF LAYERS BELOW CANDIDATE BEFORE 2+ HITS REQUIREMENT IS ENFORCED
 
-                    # Move to the layer below candidate vertex and project virtual point on that layer
-                    z_target = candidate.GetPosition().Z() - interlayerdistance
-                    projected_point = project_to_layer(init_pos, init_dir, z_target)
+            for Distance in range(1, SearchLayers+1):
+                layer_hits = [
+                    rese for rese in RESEs
+                    if self.Geometry.GetLayerDistance(candidate, rese) == -Distance
+                ]
 
-                    # Get all hits in z_target layer
-                    hits_below = [rese for rese in RESEs if self.Geometry.GetLayerDistance(candidate, rese) == -1]
+                if len(layer_hits) >= 2:
+                    selected_layer_hits = layer_hits
+                    selected_distance = Distance
+                    break
 
-                    # Apply distance selection
-                    hit1, hit2, filtered_hits = select_two_closest_hits(hits_below, projected_point)
-                    if hit1 is None or hit2 is None:
-                        continue
+            if selected_layer_hits is None:
+                continue
 
-                    if hit1 and hit2:
-                        # Construct vertex with only the selected hits
-                        vtx = Vertex(candidate, self.Geometry, [hit1, hit2])
-                        Vertices.append(vtx)
-                                    
-                    else:
-                        pass
-                    
+            # Project along MC direction to selected layer
+            init_pos = np.array([
+                candidate.GetPosition().X(),
+                candidate.GetPosition().Y(),
+                candidate.GetPosition().Z()
+            ])
+
+            init_dir = initial_vector_function(theta, phi)
+
+            # Move to the identified layer below candidate vertex and project virtual point on that layer
+            z_target = candidate.GetPosition().Z() - selected_distance * interlayerdistance
+            projected_point = project_to_layer(init_pos, init_dir, z_target)
+
+            # Choose best two hits in that layer
+            hit1, hit2, filtered_hits = select_two_closest_hits(
+                selected_layer_hits,
+                projected_point
+            )
+
+            if hit1 is None or hit2 is None:
+                continue
+
+            # Decalare vertex
+            vtx = Vertex(candidate, self.Geometry, [hit1, hit2])
+            Vertices.append(vtx)
+        
         return Vertices
-
+    
     def PlotVertexHistogram(self, NumberOfVerticesPerEvent, inputfile):
 
         # ------------------------------
@@ -842,7 +860,6 @@ def polarfit(x, A, phi0, N):
 
     # ------------------------------
     # Fit function for azimuthal modulation of pair production events.
-    
     # Parameters:
     #    phi (float or ndarray): Azimuthal angle(s) in radians.
     #    A (float): Modulation amplitude.
@@ -1023,7 +1040,6 @@ if __name__ == "__main__":
                 f.write(f"{eid} {phi}\n")
 
     if args.plot_distance_dist and all_distances_to_virtual:
-
         # Plot distribution 
         for hit in hits_below:
             distance = distance_to_virtual(hit, projected_point)
@@ -1088,14 +1104,11 @@ if __name__ == "__main__":
         plt.show()
         print('Number of phi values:', len(phi_values))
 
-
     if args.plot_histogram:
         VF.PlotVertexHistogram(NumberOfVerticesPerEvent, inputfile)
 
     if args.plot_events:
-
-        MCPoints = MCInteraction.GetMCInteractionPoints(inputfile)
-            
+        print("Accessing simulated and RESE hits...")
         '''
         NOW THE EVENT PLOTTING FOR CHOSEN EVENT
         '''
@@ -1107,28 +1120,44 @@ if __name__ == "__main__":
         # Go through RESEs
         RESEHits = EP.GetRESEEvents(Geometry, inputfile, MaxNumberOfEvents=None) # set some max number of events if desired
         print(f"Parsed RESEs for {len(RESEHits)} events")
-
-        # Plotting both on same plot for corresponding event ID
+        
+        # Find shared event IDs once
         SharedEventID = sorted(set(HTX.keys()).intersection(RESEHits.keys()))
-        print(f"Plotting {len(SharedEventID)} events with both simulated and clustered data")
-                
+        print(f"Found {len(SharedEventID)} events with both simulated and clustered data")
+        
+        # Get MC points once
+        MCPoints = MCInteraction.GetMCInteractionPoints(inputfile)
+        print(f"Parsed MC interaction points for {len(MCPoints)} events")
+        
+        # Plot based on args
         if args.plot_eventID is not None:
             event_id_to_plot = args.plot_eventID
-            print(f"Plotting event with Event ID {event_id_to_plot}")
-            EP.PlottingSimAndRESEs(event_id_to_plot, HTX, HTY, HTZ, RESEHits, VertexDict.get(event_id_to_plot, []), MCPoints=MCPoints)
+            if event_id_to_plot in SharedEventID:
+                print(f"Plotting event with Event ID {event_id_to_plot}")
+                EP.PlottingSimAndRESEs(event_id_to_plot, HTX, HTY, HTZ, RESEHits, 
+                                    VertexDict.get(event_id_to_plot, []), MCPoints=MCPoints)
+            else:
+                print(f"Event ID {event_id_to_plot} not found in data.")
 
         elif plot_event_number is not None:
             if plot_event_number in EventNumberToEventID:
                 event_id_to_plot = EventNumberToEventID[plot_event_number]
-                print(f"Plotting event number {plot_event_number} (Event ID {event_id_to_plot})")
-                EP.PlottingSimAndRESEs(event_id_to_plot, HTX, HTY, HTZ, RESEHits, VertexDict.get(event_id_to_plot, []), MCPoints=MCPoints)
+                if event_id_to_plot in SharedEventID:
+                    print(f"Plotting event number {plot_event_number} (Event ID {event_id_to_plot})")
+                    EP.PlottingSimAndRESEs(event_id_to_plot, HTX, HTY, HTZ, RESEHits, 
+                                        VertexDict.get(event_id_to_plot, []), MCPoints=MCPoints)
+                else:
+                    print(f"Event ID {event_id_to_plot} has no RESE data.")
             else:
                 print(f"Requested event number {plot_event_number} is out of bounds.")
         else:
             print("No specific event specified. Plotting all events.")
             for Event_ID in SharedEventID:
-                EP.PlottingSimAndRESEs(Event_ID, HTX, HTY, HTZ, RESEHits, VertexDict.get(Event_ID, []), MCPoints=MCPoints)
-    
+                EP.PlottingSimAndRESEs(Event_ID, HTX, HTY, HTZ, RESEHits, 
+                                    VertexDict.get(Event_ID, []), MCPoints=MCPoints)
+
     if args.plot_residuals:
-        MCPoints = MCInteraction.GetMCInteractionPoints(inputfile)
+        # Only parse MC points if not already done above
+        if not args.plot_events:
+            MCPoints = MCInteraction.GetMCInteractionPoints(inputfile)
         MCInteraction.PlotVertexResiduals(MCPoints, VertexDict, EventNumberToEventID)
