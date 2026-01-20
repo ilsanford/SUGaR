@@ -116,6 +116,8 @@ while True:
     if not sim_event:
         break
     
+    M.SetOwnership(sim_event, True)
+
     total_events += 1
     photon_vec = sim_event.GetIAAt(0).GetDirection()
 
