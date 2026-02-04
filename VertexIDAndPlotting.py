@@ -29,17 +29,22 @@ import gc
 VERTEX CLASS
 '''
 class Vertex: 
-    def __init__(self, rese, Geometry, AllRESEs):
+    def __init__(self, rese, Geometry, AllRESEs, position=None):
         # Give RESE object to get the position information
         self.rese = rese
         self.Geometry = Geometry
         self.AllRESEs = AllRESEs
 
-        pos = rese.GetPosition()
-        self.x = pos.X()
-        self.y = pos.Y()
-        self.z = pos.Z()
-        self.id = rese.GetID()
+        if position is not None:
+            self.x, self.y, self.z = position
+            self.id = rese.GetID() if rese is not None else -1 # just assign an event ID since this is not an RESE (make more robust at some point?)
+
+        else:
+            pos = rese.GetPosition()
+            self.x = pos.X()
+            self.y = pos.Y()
+            self.z = pos.Z()
+            self.id = rese.GetID()
 
     # ------------------------------
     # Methods to access information:
@@ -76,9 +81,7 @@ class Vertex:
             'RelativeZ': np.array([0., 0., 1.]),
         }
 
-        # ------------------------------
         # Get positions of hits after the vertex
-        # ------------------------------
         pos1 = np.array([
             hit1.GetPosition().X(),
             hit1.GetPosition().Y(),
@@ -100,14 +103,13 @@ class Vertex:
         d1Dir /= np.linalg.norm(d1Dir)
         d2Dir /= np.linalg.norm(d2Dir)
 
-        # ------------------------------
         # Construct initial photon direction from theta and phi
-        # ------------------------------
         init_dir = initial_vector_function(theta, phi)
 
-        # ------------------------------
         # Project reference axis into photon frame
-        # ------------------------------
+        if ref_direction is None:
+            ref_direction = "RelativeX"
+
         refDir = ref_map[ref_direction]
         refDir_lab = refDir - np.dot(refDir, init_dir) * init_dir # Remove componenet along init_dir
         refDir_lab /= np.linalg.norm(refDir_lab)  # Normalize
@@ -116,9 +118,7 @@ class Vertex:
         ref2Dir = np.cross(init_dir, refDir_lab)
         ref2Dir /= np.linalg.norm(ref2Dir)
 
-        # ------------------------------
         # Compute azimuthal angles of each track in rotated frame
-        # ------------------------------
         phi1 = np.atan2(np.dot(ref2Dir, d1Dir), np.dot(refDir_lab, d1Dir)) + 2*np.pi
         phi2 = np.atan2(np.dot(ref2Dir, d2Dir), np.dot(refDir_lab, d2Dir)) + 2*np.pi
 
@@ -135,7 +135,7 @@ FUNCTIONS TO DETERMINE ELECTRON/POSITRON HITS
 def initial_vector_function(theta, phi):
     # ------------------------------
     # Computes the vector for the initial direction of the
-    # incoming gamma-ray using theta and phi.
+    # incoming gamma-ray using theta and phi (this is MC info).
 
     # Parameters:
     #    theta (float): Off-axis angle theta in degrees.
@@ -278,7 +278,7 @@ def get_hits_in_layer_below(event_id, vertex_z, HTXPosition, HTYPosition, HTZPos
 
     # Range of z values to look in (1 layer)
     target_z = vertex_z - layer_thickness
-    tolerance = 0.1 # cm (to give some wiggle room)
+    tolerance = 1e-6 # cm (only to handle floating point issues)
 
     hits_in_layer = []
 
@@ -317,6 +317,8 @@ class VertexFinder:
         self.SearchRange = SearchRange
         self.NumberOfLayers = NumberOfLayers
         self.DetectorList = [M.MDStrip2D] # AstroPix detectors only
+        self.two_hit_after_dead_material_counter = 0
+        self.two_hit_in_two_layers_after_dead_material_counter = 0
 
     def IsInTracker(self, RESE):
 
@@ -337,9 +339,47 @@ class VertexFinder:
             return True
 
         return False
+    
+    def best_hit_pairing(self, A1, A2, B1, B2):
+        d11 = np.linalg.norm(A1-B1)
+        d12 = np.linalg.norm(A1-B2)
+        d21 = np.linalg.norm(A2-B1)
+        d22 = np.linalg.norm(A2-B2)
+
+        pairing1 = d11+d22
+        pairing2 = d12+d21
+
+        if pairing1 <= pairing2:
+            return (A1, B1),(A2, B2)
+        else:
+            return (A1, B2),(A2, B1)
+
+    # there is a lot of background that goes into the following function - see the code documentation for a description
+    def calculating_vertex_position(self, p1, v1, p2, v2):
+        v1 = v1/np.linalg.norm(v1)
+        v2 = v2/np.linalg.norm(v2)
+
+        w0 = p1 - p2
+        a = np.dot(v1, v1)
+        b = np.dot(v1, v2)
+        c = np.dot(v2, v2)
+        d = np.dot(v1, w0) 
+        e = np.dot(v2, w0)
+
+        denom = a*c - b*b
+        if abs(denom) < 1e-6:
+            return None  # if very close to zero they are parallel
+
+        t = (b*e - c*d)/denom
+        s = (a*e - b*d)/denom
+
+        pca1 = p1 + t*v1
+        pca2 = p2 + s*v2
+
+        return 0.5 * (pca1 + pca2)
 
     def FindVertices(self, RE, theta, phi):
-        # Note that a majority of this follows the logic implemented in the Revan code for vertex identification
+        # Note that the basic pair event reconstruction follows the logic implemented in the Revan code. Additional logic has been added.
         
         # ------------------------------
         # Main method to find vertex candidates in an event.
@@ -361,8 +401,10 @@ class VertexFinder:
             if self.IsInTracker(RE.GetRESEAt(i)) and RE.GetRESEAt(i).GetEnergy() > 0
         ]
 
-        # Sorting by depth in the tracker: shallowest -> deepest
-        RESEs.sort(key=lambda rese: rese.GetPosition().Z())
+        # Sorting by depth in the tracker: shallowest -> deepest (larger z-position value is shallower)
+        RESEs.sort(key=lambda rese: rese.GetPosition().Z(), reverse=True)
+
+        vertex_created_for_event = False # determine whether or not a vertex was assigned to an event
 
         for candidate in RESEs:
             # Determine if the hit is the only one in that layer
@@ -408,7 +450,7 @@ class VertexFinder:
                     LayersWithAtLeastTwoHitsBetweenStartAndStop += 1
 
             for Distance in range(StopIndex, 2, -1):
-                if NBelow[Distance-1]>= 2 and NBelow[Distance-2] >= 2:
+                if NBelow[Distance-1] >= 2 and NBelow[Distance-2] >= 2:
                     break
                 StopIndex = Distance
 
@@ -424,10 +466,7 @@ class VertexFinder:
             SearchLayers = 5 # CHANGE THIS FOR DESIRED NUMBER OF LAYERS BELOW CANDIDATE BEFORE 2+ HITS REQUIREMENT IS ENFORCED
 
             for Distance in range(1, SearchLayers+1):
-                layer_hits = [
-                    rese for rese in RESEs
-                    if self.Geometry.GetLayerDistance(candidate, rese) == -Distance
-                ]
+                layer_hits = [rese for rese in RESEs if self.Geometry.GetLayerDistance(candidate, rese) == -Distance]
 
                 if len(layer_hits) >= 2:
                     selected_layer_hits = layer_hits
@@ -438,11 +477,9 @@ class VertexFinder:
                 continue
 
             # Project along MC direction to selected layer
-            init_pos = np.array([
-                candidate.GetPosition().X(),
+            init_pos = np.array([candidate.GetPosition().X(),
                 candidate.GetPosition().Y(),
-                candidate.GetPosition().Z()
-            ])
+                candidate.GetPosition().Z()])
 
             init_dir = initial_vector_function(theta, phi)
 
@@ -451,19 +488,96 @@ class VertexFinder:
             projected_point = project_to_layer(init_pos, init_dir, z_target)
 
             # Choose best two hits in that layer
-            hit1, hit2, filtered_hits = select_two_closest_hits(
-                selected_layer_hits,
-                projected_point
-            )
+            hit1, hit2, filtered_hits = select_two_closest_hits(selected_layer_hits, projected_point)
 
             if hit1 is None or hit2 is None:
                 continue
 
-            # Decalare vertex
+            # Declare vertex
             vtx = Vertex(candidate, self.Geometry, [hit1, hit2])
+            vtx.EventID = RE.GetEventID()
             Vertices.append(vtx)
+            vertex_created_for_event = True # state that the event has been assigned a vertex
+
+        '''
+        SOME NEW LOGIC STARTS HERE
+        '''
+        # New logic for events that did not have a vertex assigned
+        if not vertex_created_for_event:
+            
+            # Identify the topmost layer in the event
+            shallowest_z = max(rese.GetPosition().Z() for rese in RESEs)
+
+            hits_in_first_layer = [rese for rese in RESEs if abs(rese.GetPosition().Z()-shallowest_z) < 0.01] # in same layer as the shallowest hit
+
+            if len(hits_in_first_layer) == 2:
+
+                self.two_hit_after_dead_material_counter += 1
+
+                hit1, hit2 = hits_in_first_layer
+
+                if not self.Geometry.AreInSameLayer(hit1, hit2):
+                    print("Z-close but different layer:", RE.GetEventID())
+
+                # Now look for hits in the layer immediately below
+                hits_in_layer_below = [rese for rese in RESEs
+                    if self.Geometry.GetLayerDistance(hit1, rese) == -1]
+
+                # For now also require exactly two hits in the layer below
+                if len(hits_in_layer_below) == 2:
+
+                    self.two_hit_in_two_layers_after_dead_material_counter += 1
+
+                    hit1lay1, hit2lay1 = hits_in_first_layer
+                    hit1lay2, hit2lay2 = hits_in_layer_below
+
+                    A1 = np.array([hit1lay1.GetPosition().X(),
+                        hit1lay1.GetPosition().Y(),
+                        hit1lay1.GetPosition().Z()])
+
+                    A2 = np.array([hit2lay1.GetPosition().X(),
+                        hit2lay1.GetPosition().Y(),
+                        hit2lay1.GetPosition().Z()])
+
+                    B1 = np.array([hit1lay2.GetPosition().X(),
+                        hit1lay2.GetPosition().Y(),
+                        hit1lay2.GetPosition().Z()])
+
+                    B2 = np.array([hit2lay2.GetPosition().X(),
+                        hit2lay2.GetPosition().Y(),
+                        hit2lay2.GetPosition().Z()])
+
+                    # Choose best hit pairing
+                    (track1, track2) = self.best_hit_pairing(A1, A2, B1, B2)
+
+                    (p1, q1), (p2, q2) = track1, track2 # p = point in layer 1, q = point in layer 2
+
+                    v1 = q1-p1
+                    v2 = q2-p2
+
+                    # Assigning the vertex a 3D position
+                    vertex_point = self.calculating_vertex_position(p1, v1, p2, v2)
+                    
+                    if vertex_point is None:
+                        return Vertices # skip
+                    
+                    vtx = Vertex(rese=None, Geometry=self.Geometry, AllRESEs=[hit1lay1, hit2lay1, hit1lay2, hit2lay2], position=vertex_point)
+                    
+                    Vertices.append(vtx)
+
+        '''
+        ENDS HERE
+        '''
+
+        '''
+        If using the print statements below, this script must be run on a SIM file containing information only about events
+        that convert in dead material. Run DeadMaterialConversionEventSelection.py to get a SIM file containing this information.
+        '''
+        #print("Number of events with two hits after dead material conversion:", self.two_hit_after_dead_material_counter)
+        #print("Number of events with two hits in two layers after dead material conversion:", self.two_hit_in_two_layers_after_dead_material_counter)
         
         return Vertices
+    
     
     def PlotVertexHistogram(self, NumberOfVerticesPerEvent, inputfile):
 
@@ -528,8 +642,27 @@ class EventPlotting:
         HTXPosition = {}
         HTYPosition = {}
         HTZPosition = {}
+        ElectronHTX = {}
+        ElectronHTY = {}
+        ElectronHTZ = {}
+        PositronHTX = {}
+        PositronHTY = {}
+        PositronHTZ = {}
+
         CurrentEventID = None
         ExpectEventID = False
+
+        HTXPosition[CurrentEventID] = []
+        HTYPosition[CurrentEventID] = []
+        HTZPosition[CurrentEventID] = []
+
+        ElectronHTX[CurrentEventID] = []
+        ElectronHTY[CurrentEventID] = []
+        ElectronHTZ[CurrentEventID] = []
+
+        PositronHTX[CurrentEventID] = []
+        PositronHTY[CurrentEventID] = []
+        PositronHTZ[CurrentEventID] = []
 
         with gzip.open(self.inputfile, 'rt') as f:
             for line in f:
@@ -549,6 +682,15 @@ class EventPlotting:
                                 HTXPosition[CurrentEventID] = []
                                 HTYPosition[CurrentEventID] = []
                                 HTZPosition[CurrentEventID] = []
+
+
+                                ElectronHTX[CurrentEventID] = []
+                                ElectronHTY[CurrentEventID] = []
+                                ElectronHTZ[CurrentEventID] = []
+
+                                PositronHTX[CurrentEventID] = []
+                                PositronHTY[CurrentEventID] = []
+                                PositronHTZ[CurrentEventID] = []
                             except ValueError:
                                 CurrentEventID = None
                     ExpectEventID = False
@@ -561,15 +703,26 @@ class EventPlotting:
                             XPositionColumn = float(HTColumns[1])
                             YPositionColumn = float(HTColumns[2])
                             ZPositionColumn = float(HTColumns[3])
+                            
                             if CurrentEventID is not None:
                                 HTXPosition[CurrentEventID].append(XPositionColumn)
                                 HTYPosition[CurrentEventID].append(YPositionColumn)
                                 HTZPosition[CurrentEventID].append(ZPositionColumn)
+                            
                     except (IndexError, ValueError):
                         continue
+                    
+                    interactionid = list(map(int, line.split(';')[6:]))
+                    if 3 in interactionid:
+                        ElectronHTX[CurrentEventID].append(XPositionColumn)
+                        ElectronHTY[CurrentEventID].append(YPositionColumn)
+                        ElectronHTZ[CurrentEventID].append(ZPositionColumn)
+                    if 4 in interactionid:
+                        PositronHTX[CurrentEventID].append(XPositionColumn)
+                        PositronHTY[CurrentEventID].append(YPositionColumn)
+                        PositronHTZ[CurrentEventID].append(ZPositionColumn)
 
-        return HTXPosition, HTYPosition, HTZPosition
-
+        return (HTXPosition, HTYPosition, HTZPosition, ElectronHTX, ElectronHTY, ElectronHTZ, PositronHTX, PositronHTY, PositronHTZ) 
     def GetRESEEvents(self, Geometry, inputfile, MaxNumberOfEvents=None):
 
         # ------------------------------
@@ -589,7 +742,7 @@ class EventPlotting:
         Reader.Open(M.MString(self.inputfile))
 
         Clusterizer = M.MERHitClusterizer()
-        Clusterizer.SetParameters(1, -1) # Default clustering parameters
+        Clusterizer.SetParameters(0,0,0,0,0,0,0,0,True) # Default clustering parameters are (1,-1)...CURRENT INPUT STOPS CLUSTERING
 
         RESEData = {} 
         EventCount = 0
@@ -636,7 +789,6 @@ class EventPlotting:
                     marker = 'x'
                     label = "Unknown"
                  
-
                 RESEData[EventID].append((X, Y, Z, marker, label))
 
             EventCount += 1
@@ -644,7 +796,7 @@ class EventPlotting:
         Reader.Close()
         return RESEData
 
-    def PlottingSimAndRESEs(self, EventID, HTX, HTY, HTZ, RESEHits, Vertices, MCPoints=None):
+    def PlottingSimAndRESEs(self, EventID, EHTX, EHTY, EHTZ,  PHTX, PHTY, PHTZ, RESEHits, Vertices, MCPoints=None):
 
         # ------------------------------
         # Plot 3D view of simulated (MC) hits, RESE hits, identified vertices, and true MC vertex.
@@ -664,14 +816,25 @@ class EventPlotting:
         ax.set_ylabel("Y [cm]")
         ax.set_zlabel("Z [cm]")
 
-        # Plot simulated tracker hits
+        '''
+        UNCOMMENT TO SHOW MC HITS (without e- / e+ distinction)
         if EventID in HTX and HTX[EventID]:
-            ax.scatter(HTX[EventID], HTY[EventID], HTZ[EventID], c='blue', marker='o', label='Simulated HT Events', alpha=0.4, s=40)
+            ax.scatter(HTX[EventID], HTY[EventID], HTZ[EventID], c='blue', marker='o', s=20, alpha=0.3, label='MC HT Hits')
+        '''
+
+        # Plot simulated tracker hits amd color based on electron and positron hits
+        if EventID in EHTX and EHTX[EventID]:
+            ax.scatter(EHTX[EventID], EHTY[EventID], EHTZ[EventID], c='purple', marker='*', s=40, alpha=0.4, label='Electron HT')
+
+        if EventID in PHTX and PHTX[EventID]:
+            ax.scatter(PHTX[EventID], PHTY[EventID], PHTZ[EventID], c='orange', marker='^', s=40, alpha=0.6, label='Positron HT')
 
         # Plot all RESE events in red with different markers by RESE type
+        
         if EventID in RESEHits and RESEHits[EventID]:
             for x, y, z, marker, label in RESEHits[EventID]:
                 ax.scatter(x, y, z, c='red', marker=marker, alpha=0.4, s=40)
+        
 
         # Plotting the identified recontructed vertices
         if Vertices:
@@ -687,22 +850,24 @@ class EventPlotting:
             ax.scatter(mc_pos[0], mc_pos[1], mc_pos[2], color='green', marker='x', s=200, label='MC Interaction Point', zorder=11)
 
         # Creating the different labels in the legend
-        RedClusterLegend = Line2D([0], [0], marker='s', color='red', linestyle='None', markersize=8, label='Clustered RESEs')
+        #RedClusterLegend = Line2D([0], [0], marker='s', color='red', linestyle='None', markersize=8, label='Clustered RESEs') UNCOMMENT IF RUNNING CLUSTERING
         RedHTLegend = Line2D([0], [0], marker='o', color='red', linestyle='None', markersize=8, label='Hit RESEs')
-        BlueLegend = Line2D([0], [0], marker='o', color='blue', linestyle='None', markersize=8, label='MC Hits')
+        ElectronHTLegend = Line2D([0], [0], marker='*', color='purple', linestyle='None', markersize=8, label='Electron HT')
+        PositronHTLegend = Line2D([0], [0], marker='^', color='orange', linestyle='None', markersize=8, label='Positron HT')
+        #BlueLegend = Line2D([0], [0], marker='o', color='blue', linestyle='None', markersize=8, label='MC Hits') UNCOMMENT TO SHOW MC HITS (without e- / e+ distinction)
         VertexLegend = Line2D([0], [0], marker='x', color='black', linestyle='None', markersize=10, label='Identified Vertex Position(s)')
         MCPointLegend = Line2D([0], [0], marker='x', color='green', linestyle='None', markersize=10, label='MC Vertex')
 
         # Combine into final legend list depending on what's present
-        legend_handles = [BlueLegend]
+        legend_handles = []
         if EventID in RESEHits and RESEHits[EventID]:
-            legend_handles += [RedHTLegend, RedClusterLegend]
+            legend_handles += [RedHTLegend]
         if Vertices:
             legend_handles += [VertexLegend]
         if MCPoints is not None and EventID in MCPoints:
             legend_handles += [MCPointLegend]
+            legend_handles += [ElectronHTLegend, PositronHTLegend]
         
-
         ax.legend(handles=legend_handles, loc='upper right')
     
         plt.tight_layout()
@@ -810,7 +975,7 @@ class MCInteraction: # does not NEED to be a class -> this is mostly just for or
 
         # Plotting
         plt.figure(figsize=(8, 5))
-        plt.hist(Residuals, bins=np.arange(0, 100, 0.05), edgecolor='black')
+        plt.hist(Residuals, bins=np.arange(0, 100, 1.5), edgecolor='black')
         plt.xlabel("Distance between MC Interaction Point and Identified First Vertex [cm]")
         plt.ylabel("Number of Events")
 
@@ -831,7 +996,7 @@ class MCInteraction: # does not NEED to be a class -> this is mostly just for or
         plt.title("Residual in Y")
 
         plt.subplot(1, 3, 3)
-        plt.hist(dz_list, bins=np.arange(-50, 50, 0.05), edgecolor='black')
+        plt.hist(dz_list, bins=np.arange(-50, 50, 1.5), edgecolor='black')
         plt.xlabel(r"$\Delta$ z [cm]")
         plt.title("Residual in Z")
 
@@ -926,7 +1091,7 @@ if __name__ == "__main__":
     # Cluster the events
     Clusterizer = M.MERHitClusterizer()
     Clusterizer.SetGeometry(Geometry)
-    Clusterizer.SetParameters(1, -1)
+    Clusterizer.SetParameters(0,0,0,0,0,0,0,0,True) # can change back to default if needed
     Clusterizer.PreAnalysis()    
 
     # Initialize lists and dicts
@@ -948,10 +1113,12 @@ if __name__ == "__main__":
     if os.path.exists(output_phi_filename):
         os.remove(output_phi_filename)
 
+    EP = EventPlotting(inputfile, Geometry)
+    HTX, HTY, HTZ, ElectronHTX, ElectronHTY, ElectronHTZ, PositronHTX, PositronHTY, PositronHTZ = EP.GetSimHits()
     # Reading each event and stopping if none left, rejecting "invalid" events (as identified in MEGAlib)
     while True:
         RE = Reader.GetNextEvent()
-        M.SetOwnership(RE, True) # necessary to avoid memory leaks
+        M.SetOwnership(RE, True) # necessary to avoid memory leakspython3 Ver
 
         if not RE:
             print("No more events.")
@@ -974,13 +1141,10 @@ if __name__ == "__main__":
         VertexDict[RE.GetEventID()] = Vertices 
 
         if Vertices:
-            EP = EventPlotting(inputfile, Geometry=Geometry)
-            HTXPosition, HTYPosition, HTZPosition = EP.GetSimHits()
-
             top_vertex = VF.TopVertex(Vertices)
             vertex_z = top_vertex.GetPosition()[2]
 
-            hits_below = get_hits_in_layer_below(RE.GetEventID(), vertex_z, HTXPosition, HTYPosition, HTZPosition)
+            hits_below = get_hits_in_layer_below(RE.GetEventID(), vertex_z, HTX, HTY, HTZ)
 
             # Projected point -> make function
             init_dir = initial_vector_function(args.theta, args.phi)
@@ -1114,7 +1278,7 @@ if __name__ == "__main__":
         '''
         EP = EventPlotting(inputfile, Geometry=Geometry)
         # Go through the sim hits
-        HTX, HTY, HTZ = EP.GetSimHits()
+        (HTX, HTY, HTZ, ElectronHTX, ElectronHTY, ElectronHTZ, PositronHTX, PositronHTY, PositronHTZ) = EP.GetSimHits()
         print(f"Parsed sim hits for {len(HTX)} events")
 
         # Go through RESEs
@@ -1153,7 +1317,7 @@ if __name__ == "__main__":
         else:
             print("No specific event specified. Plotting all events.")
             for Event_ID in SharedEventID:
-                EP.PlottingSimAndRESEs(Event_ID, HTX, HTY, HTZ, RESEHits, 
+                EP.PlottingSimAndRESEs(Event_ID, ElectronHTX, ElectronHTY, ElectronHTZ, PositronHTX, PositronHTY, PositronHTZ, RESEHits, 
                                     VertexDict.get(Event_ID, []), MCPoints=MCPoints)
 
     if args.plot_residuals:
