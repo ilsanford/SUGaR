@@ -1,6 +1,6 @@
 # SUGaR-PR
 ## Software to Update Gamma-ray Reconstruction in the Pair Regime
-### A Python MEGAlib extension for improving gamma-ray reconstruction in the pair regime as well as performin pair regime polarimetry
+### A Python MEGAlib extension for improving gamma-ray reconstruction in the pair regime as well as performing pair regime polarimetry
 Python scripts designed to build off of existing MEGAlib software to perform analysis on gamma rays undergoing pair production in a detector. Currently, this is specifically applied to the AMEGO-X geometry but parameters can be changed to adapt to different geometries.
 
 ### The Pipeline
