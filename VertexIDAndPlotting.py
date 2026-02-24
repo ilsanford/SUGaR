@@ -1,32 +1,37 @@
 '''
-This file is separated into functions and classes:
-    (a) Vertex class: defines properties of the vertex (position, ID, adjacent hits in the layer below, and the azimuthal angle)
+This file is separated into standalone functions and classes:
+    (a) Vertex class: defines properties of the vertex (position, ID, adjacent hits in the layer below, associated
+                                                        gamma ray direction, and the azimuthal angle)
     (b) Functions:
-        i. Projects the initial gamma ray direction vector onto the next layer
-        ii. Calculates and returns the distance from a hit to the projected/virtual point
-        iii. Finds the two hits closest to the identified virtual hit
-        iv. Plots the distribution of the distances from the hit to the virtual point
-        v. Gets the hits in the layer below the identified vertex
-    (b) VertexFinder class: locates the vertex - refer to the MERTrack.cxx file for the process of vertex identification
-    (c) EventPlotting class: contains structure to plot the MC hits, RESE hits, MC vertex/interaction point, and identified vertex
-                             for a specified event
-    (d) MCInteraction class: structure to extract the MC interaction points for each event
+        i. Uses input theta and phi (MC info) to compute the initial gamma ray direction vector
+        ii. Projects the initial gamma ray direction vector onto the next layer
+        iii. Calculates and returns the distance from a hit to the projected/virtual point
+        iv. Finds the two hits closest to the identified virtual hit
+        v. Plots the distribution of the distances from the hit to the virtual point
+        vi. Gets the hits in the layer below the identified vertex
+    (c) VertexFinder class: locates the vertex - refer to the MERTrack.cxx file for the process of vertex identification. Also
+                            reconstructs the gamma-ray direction using the identified vertex and hits in the layer below. 
+    (d) EventPlotting class: contains structure to plot the MC hits, RESE hits, MC vertex/interaction point, and identified vertex
+                            for a specified event
+    (e) MCInteraction class: structure to extract the MC interaction points for each event
 '''
 
+'''
+IMPORTING NECESSARY LIBRARIES AND MODULES
+'''
 import ROOT as M
 import gzip
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-import matplotlib.cm as cm
+# from mpl_toolkits.mplot3d import Axes3D
+# import matplotlib.cm as cm 
 from matplotlib.lines import Line2D
 import argparse
 import numpy as np
-from scipy.optimize import curve_fit
 import os
 import gc
 
 '''
-VERTEX CLASS
+(a) VERTEX CLASS
 '''
 class Vertex: 
     def __init__(self, rese, Geometry, AllRESEs, position=None):
@@ -37,7 +42,7 @@ class Vertex:
 
         if position is not None:
             self.x, self.y, self.z = position
-            self.id = rese.GetID() if rese is not None else -1 # just assign an event ID since this is not an RESE (make more robust at some point?)
+            self.id = rese.GetID() if rese else -1 # just assign an event ID since this is not an RESE (make more robust at some point?)
 
         else:
             pos = rese.GetPosition()
@@ -46,10 +51,16 @@ class Vertex:
             self.z = pos.Z()
             self.id = rese.GetID()
 
-    # ------------------------------
-    # Methods to access information:
-    # ------------------------------
+        self.energy = rese.GetEnergy() if rese is not None else None
 
+        # giving track reconstruction placeholders for now
+        self.electron_dir = None
+        self.positron_dir = None
+        self.electron_energy = None
+        self.positron_energy = None
+        self.gamma_dir = None
+
+    # Methods to access information:
     def GetPosition(self):
         return np.array([self.x, self.y, self.z])
 
@@ -65,33 +76,34 @@ class Vertex:
     def GetID(self):
         return self.id
     
-    # ------------------------------
-    # Compute azimuthal angle phi of the pair plane in photon's frame
-    # hit1, hit2: hits after the vertex (e+/e- tracks)
-    # theta, phi: polar/azimuthal angles of incoming photon in degrees
-    # ref_direction: one of "RelativeX", "RelativeY", "RelativeZ" (defines reference axis)
-    # ------------------------------
-
+    def GetHitEnergy(self):
+        return self.energy
+    
     def ComputePhi(self, theta, phi, hit1, hit2, ref_direction=None):
+        '''
+        Compute azimuthal angle (phi) of the pair plane in photon's frame
+        ------------------------------------------------------------------------------
+        Parameters:
+            hit1, hit2: hits after the vertex (electron/positron tracks)
+            theta, phi: polar/azimuthal angles of incoming photon in degrees
+            ref_direction: one of "RelativeX", "RelativeY", "RelativeZ" inputs (defines reference axis)
 
-        # Define mapping from string to reference unit vector
-        ref_map = {
-            'RelativeX': np.array([1., 0., 0.]),
+        Returns:
+            phi: azimuthal angle of the pair plane in photon's frame (radians, wrapped to [-pi, pi])
+        '''
+
+        # Define mapping from input string to reference unit vector
+        ref_map = {'RelativeX': np.array([1., 0., 0.]),
             'RelativeY': np.array([0., 1., 0.]),
-            'RelativeZ': np.array([0., 0., 1.]),
-        }
+            'RelativeZ': np.array([0., 0., 1.]),}
 
         # Get positions of hits after the vertex
-        pos1 = np.array([
-            hit1.GetPosition().X(),
+        pos1 = np.array([hit1.GetPosition().X(),
             hit1.GetPosition().Y(),
-            hit1.GetPosition().Z()
-        ])
-        pos2 = np.array([
-            hit2.GetPosition().X(),
+            hit1.GetPosition().Z()])
+        pos2 = np.array([hit2.GetPosition().X(),
             hit2.GetPosition().Y(),
-            hit2.GetPosition().Z()
-        ])
+            hit2.GetPosition().Z()])
 
         vertex_position = self.GetPosition()
 
@@ -106,10 +118,10 @@ class Vertex:
         # Construct initial photon direction from theta and phi
         init_dir = initial_vector_function(theta, phi)
 
-        # Project reference axis into photon frame
         if ref_direction is None:
-            ref_direction = "RelativeX"
+            ref_direction = "RelativeX" # default to RelativeX if not specified
 
+        # Project reference axis into photon frame
         refDir = ref_map[ref_direction]
         refDir_lab = refDir - np.dot(refDir, init_dir) * init_dir # Remove componenet along init_dir
         refDir_lab /= np.linalg.norm(refDir_lab)  # Normalize
@@ -128,22 +140,56 @@ class Vertex:
         
         # Wrap to [-pi, pi]
         return np.atan2(np.sin(phi), np.cos(phi))
-          
+    
+    def ComputeIncomingGammaDirection(self):
+        '''
+        Reconstruct the photon direction using hit energy as well as track vectors (as done in MEGAlib reconstruction, 
+        see the file: megalib/global/src/MPairEvent.cxx... this gets called later in MRERawEvent.cxx under the Validate() object)
+        
+        Note: when applied this is computing the direction for a singular event, not the overall reconstructed direction. 
+                This should be averaged for comparison to MC truth.
+        ------------------------------------------------------------------------------
+        Parameters:
+            None (uses the track directions and energies assigned to the vertex object)
+        
+        Returns:
+            gamma_dir: unit vector of the reconstructed incoming gamma-ray direction
+        '''
+
+        if self.electron_dir is None or self.positron_dir is None:
+            raise ValueError("Track directions not set.")
+
+        if self.electron_energy is None or self.positron_energy is None:
+            raise ValueError("Track energies not set.")
+
+        d1 = self.electron_dir / np.linalg.norm(self.electron_dir)
+        d2 = self.positron_dir / np.linalg.norm(self.positron_dir)
+
+        E1 = self.electron_energy
+        E2 = self.positron_energy
+
+        gamma_dir = -(E1 * d1 + E2 * d2) / (E1 + E2) # energy-weighted reconstruction 
+        gamma_dir /= np.linalg.norm(gamma_dir)
+
+        self.gamma_dir = gamma_dir
+
+        return gamma_dir
+
 '''
-FUNCTIONS TO DETERMINE ELECTRON/POSITRON HITS
+(b) STANDALONE FUNCTIONS
 '''
 def initial_vector_function(theta, phi):
-    # ------------------------------
-    # Computes the vector for the initial direction of the
-    # incoming gamma-ray using theta and phi (this is MC info).
+    '''
+    Computes the vector for the initial direction of the incoming gamma-ray using theta and phi (this is MC info)
+    ---------------------------------------------------------------
+    Parameters:
+        theta (float): Off-axis angle theta in degrees
+        phi (float): Input phi angle in degrees
 
-    # Parameters:
-    #    theta (float): Off-axis angle theta in degrees.
-    #    phi (float): Phi angle in degrees.
+    Returns:
+        np.ndarray: init_dir unit direction vector
+    '''
 
-    # Returns:
-    #    np.ndarray: init_dir unit direction vector.
-    # ------------------------------
     theta_rad = np.deg2rad(theta)
     phi_rad = np.deg2rad(phi)
     init_dir = np.array([
@@ -157,52 +203,49 @@ def initial_vector_function(theta, phi):
     return init_dir
 
 def project_to_layer(init_pos, init_dir, z_target):
+    '''
+    Projects a virtual point along a direction vector to a plane at z = z_target
+    --------------------------------------------------------------
+    Parameters:
+        init_pos (np.ndarray): Initial position [x, y, z]
+        init_dir (np.ndarray): Unit direction vector [dx, dy, dz]
+        z_target (float): z-position of the detector layer
 
-    # ------------------------------
-    # Projects a virtual point along a direction vector to a plane at z = z_target.
-
-    # Parameters:
-    #    init_pos (np.ndarray): Initial position [x, y, z].
-    #    init_dir (np.ndarray): Unit direction vector [dx, dy, dz].
-    #    z_target (float): z-position of the detector layer.
-
-    # Returns:
-    #    np.ndarray: Projected point on the z = z_target plane.
-    # ------------------------------
+    Returns:
+        np.ndarray: Projected point on the z = z_target plane
+    '''
 
     t = (z_target - init_pos[2]) / init_dir[2] 
     projected_point = init_pos + t * init_dir
     return projected_point
 
 def distance_to_virtual(position, virtual_point):
+    '''
+    Computes distance from a hit to a virtual projected point
+    --------------------------------------------------------------
+    Parameters:
+        position (np.ndarray): Position of the hit [x, y, z]
+        virtual_point (np.ndarray): Virtual projection point [x, y, z]
 
-    # ------------------------------
-    # Computes Euclidean distance from a hit to a virtual projected point.
-
-    # Parameters:
-    #    hit_pos (np.ndarray): Position of the hit [x, y, z].
-    #    virtual_point (np.ndarray): Virtual projection point [x, y, z].
-
-    # Returns:
-    #    float: Distance in cm.
-    # ------------------------------
+    Returns:
+        float: Distance in cm from the hit to the virtual point
+    '''
 
     distance = np.linalg.norm(position - virtual_point)
     return distance
 
 def select_two_closest_hits(hits, projected_point):
+    '''
+    Finds the two hits closest to the projected virtual point within a given distance cutoff (currently set as 5cm)
+    --------------------------------------------------------------
+    Parameters:
+        hits (list): List of RESE hit objects
+        projected_point (np.ndarray): Virtual point from vertex projection
 
-    # ------------------------------
-    # Finds the two hits closest to the projected virtual point within a distance cutoff.
-
-    # Parameters:
-    #    hits (list): List of RESE hit objects.
-    #    projected_point (np.ndarray): Virtual point from vertex projection.
-
-    # Returns:
-    #    tuple: (hit1, hit2, filtered_hits) where hit1 and hit2 are the closest hits (or None),
-    #           and filtered_hits is a list of both (if found).
-    # ------------------------------
+    Returns:
+        tuple: (hit1, hit2, filtered_hits) where hit1 and hit2 are the closest hits (or None), and filtered_hits 
+                is a list of both (if found)
+    '''
 
     distance_cutoff = 5  # cm
     hits_with_dist = []
@@ -229,15 +272,17 @@ def select_two_closest_hits(hits, projected_point):
     return hit1, hit2, filtered_hits
 
 def plot_distance_distribution(hits, projected_point, bins=50):
-
-    # ------------------------------
-    # Plots histogram of distances between each hit and the virtual point.
-
-    # Parameters:
-    #    hits (list of arrays): List of hit position arrays [x, y, z].
-    #    projected_point (np.ndarray): Virtual projection point [x, y, z].
-    #    bins (int): Number of bins in histogram.
-    # ------------------------------
+    '''
+    Plots histogram of distances between each hit and the virtual point
+    --------------------------------------------------------------
+    Parameters:
+        hits (list of arrays): List of hit position arrays [x, y, z]
+        projected_point (np.ndarray): Virtual projection point [x, y, z]
+        bins (int): Number of bins in histogram
+    
+    Returns:
+        None (displays a histogram plot)
+    '''
 
     distances = []
     for hit in hits:
@@ -261,20 +306,18 @@ def plot_distance_distribution(hits, projected_point, bins=50):
     plt.show()
 
 def get_hits_in_layer_below(event_id, vertex_z, HTXPosition, HTYPosition, HTZPosition, layer_thickness=1.5):
+    '''
+    Identifies all hits in the detector layer directly below the vertex.
+    --------------------------------------------------------------
+    Parameters:
+        event_id (int): Event ID to filter hits by
+        vertex_z (float): z-position of the vertex
+        HTXPosition, HTYPosition, HTZPosition (list): HT position data (in same units as vertex)
+        layer_thickness (float): Vertical spacing between layers [cm]
 
-    # ------------------------------
-    # Identifies all hits in the detector layer directly below the vertex.
-
-    # Parameters:
-    #    event_id (int): Event ID to filter hits.
-    #    vertex_z (float): z-position of the vertex.
-    #    HTXPosition, HTYPosition, HTZPosition (list): HitTracker position data (in same units as vertex).
-    #    layer_thickness (float): Expected vertical spacing between layers [cm].
-
-    # Returns:
-    #    list: List of 3D hit position arrays [x, y, z] in the layer below.
-    # ------------------------------
-
+    Returns:
+        list: List of 3D hit position arrays [x, y, z] in the layer below
+    '''
 
     # Range of z values to look in (1 layer)
     target_z = vertex_z - layer_thickness
@@ -293,25 +336,10 @@ def get_hits_in_layer_below(event_id, vertex_z, HTXPosition, HTYPosition, HTZPos
     return hits_in_layer
 
 '''
-THIS SECTION IS FOR FINDING VERTICES
+(c) VERTEXFINDER CLASS
 '''
 class VertexFinder:
-
-    # ------------------------------
-    # VertexFinder identifies potential gamma-ray conversion (vertex) points
-    # in the detector using hit data from MEGAlib RESEs.
-    # ------------------------------
-
     def __init__(self, Geometry, SearchRange = 30, NumberOfLayers = 2): # Let the default NumberOfLayers be 2
-
-        # ------------------------------
-        # Initialize VertexFinder.
-
-        # Parameters:
-        #    Geometry (MGeometry): Detector geometry for layer comparisons.
-        #    SearchRange (int): Number of layers to search up/down from candidate vertex.
-        #    NumberOfLayers (int): Minimum layers with 2+ hits required below vertex.
-        # ------------------------------
 
         self.Geometry = Geometry
         self.SearchRange = SearchRange
@@ -321,13 +349,15 @@ class VertexFinder:
         self.two_hit_in_two_layers_after_dead_material_counter = 0
 
     def IsInTracker(self, RESE):
+        '''
+        Determine if a RESE is part of the tracker
+        ---------------------------------------------------------------
+        Parameters:
+            RESE (MRESE): The RESE to check
 
-        # ------------------------------
-        # Determine if a RESE is part of the tracker.
-
-        #  Returns:
-        #    bool: True if RESE is in the tracker.
-        # ------------------------------
+        Returns:
+            bool: True if RESE is in the tracker, False otherwise
+        '''
 
         if RESE.GetType() == M.MRESE.c_Track:
             return True
@@ -341,6 +371,16 @@ class VertexFinder:
         return False
     
     def best_hit_pairing(self, A1, A2, B1, B2):
+        '''
+        Given two hits in the layer below the vertex (B1, B2) and two hits in the layer above (A1, A2), determine the best pairing
+        ----------------------------------------------------------------
+        Parameters:
+            A1, A2 (np.ndarray): 3D positions of the two hits in the layer above the vertex
+            B1, B2 (np.ndarray): 3D positions of the two hits in the layer below the vertex
+        
+        Returns:
+            tuple: ((A1, B1), (A2, B2)) or ((A1, B2), (A2, B1)) depending on which pairing has the smaller total distance
+        '''
         d11 = np.linalg.norm(A1-B1)
         d12 = np.linalg.norm(A1-B2)
         d21 = np.linalg.norm(A2-B1)
@@ -354,8 +394,20 @@ class VertexFinder:
         else:
             return (A1, B2),(A2, B1)
 
-    # there is a lot of background that goes into the following function - see the code documentation for a description
+    # There is a lot of background that goes into the following function - see the code documentation for a description
     def calculating_vertex_position(self, p1, v1, p2, v2):
+        '''
+        Given two tracks defined by points p1 and p2 and direction vectors v1 and v2, calculate the point of closest 
+        approach between the two tracks
+        ----------------------------------------------------------------
+        Parameters:
+            p1, p2 (np.ndarray): Points on each track (x, y, z)
+            v1, v2 (np.ndarray): Direction vectors of each track
+        
+        Returns:
+            np.ndarray: 3D point representing the reconstructed vertex position (midpoint of closest approach)
+        '''
+
         v1 = v1/np.linalg.norm(v1)
         v2 = v2/np.linalg.norm(v2)
 
@@ -380,18 +432,17 @@ class VertexFinder:
 
     def FindVertices(self, RE, theta, phi):
         # Note that the basic pair event reconstruction follows the logic implemented in the Revan code. Additional logic has been added.
-        
-        # ------------------------------
-        # Main method to find vertex candidates in an event.
+        '''
+        Main method to find vertex candidates in an event
+        ---------------------------------------------------------------
+        Parameters:
+            RE (MRESEvent): The reconstructed event object
+            theta (float): Incoming photon polar angle (deg)
+            phi (float): Incoming photon azimuthal angle (deg)
 
-        # Parameters:
-        #    RE (MRESEvent): The reconstructed event object.
-        #    theta (float): Incoming photon polar angle (deg).
-        #    phi (float): Incoming photon azimuthal angle (deg).
-
-        # Returns:
-        #    list: List of Vertex objects found in the event.
-        # ------------------------------
+        Returns:
+            list: List of Vertex objects found in the event
+        '''
 
         Vertices = []
 
@@ -463,7 +514,7 @@ class VertexFinder:
             selected_layer_hits = None
             selected_distance = None
 
-            SearchLayers = 5 # CHANGE THIS FOR DESIRED NUMBER OF LAYERS BELOW CANDIDATE BEFORE 2+ HITS REQUIREMENT IS ENFORCED
+            SearchLayers = 5 # CHANGE THIS FOR DESIRED NUMBER OF LAYERS BELOW CANDIDATE BEFORE 2+ HITS REQUIREMENT IS ENFORCED (new logic)
 
             for Distance in range(1, SearchLayers+1):
                 layer_hits = [rese for rese in RESEs if self.Geometry.GetLayerDistance(candidate, rese) == -Distance]
@@ -499,6 +550,30 @@ class VertexFinder:
             Vertices.append(vtx)
             vertex_created_for_event = True # state that the event has been assigned a vertex
 
+            '''
+            FINALLY, compute the electron/positron track directions for gamma-ray reconstruction
+            '''
+            if vtx is not None:
+                electron_track = np.array([hit1.GetPosition().X(),
+                                        hit1.GetPosition().Y(),
+                                        hit1.GetPosition().Z()]) \
+                                - np.array([vtx.x, vtx.y, vtx.z])
+                positron_track = np.array([hit2.GetPosition().X(),
+                                        hit2.GetPosition().Y(),
+                                        hit2.GetPosition().Z()]) \
+                                - np.array([vtx.x, vtx.y, vtx.z])
+
+                # Normalize directions
+                vtx.electron_dir = electron_track / np.linalg.norm(electron_track)
+                vtx.positron_dir = positron_track / np.linalg.norm(positron_track)
+
+                vtx.electron_energy = hit1.GetEnergy()
+                vtx.positron_energy = hit2.GetEnergy()
+
+                vtx.gamma_dir = vtx.ComputeIncomingGammaDirection()
+                vtx.vertex_type = 'type_1ht2ht' # assigning a type to the event for histogramming purposes 
+                true_dir = initial_vector_function(theta, phi)
+            
         '''
         SOME NEW LOGIC STARTS HERE
         '''
@@ -563,7 +638,28 @@ class VertexFinder:
                     
                     vtx = Vertex(rese=None, Geometry=self.Geometry, AllRESEs=[hit1lay1, hit2lay1, hit1lay2, hit2lay2], position=vertex_point)
                     
+                    '''
+                    ADDED DIRECTION AND ENERGIES
+                    '''
+                    vtx.electron_dir = v1
+                    vtx.positron_dir = v2
+
+                    # Normalize directions
+                    vtx.electron_dir /= np.linalg.norm(vtx.electron_dir)
+                    vtx.positron_dir /= np.linalg.norm(vtx.positron_dir)
+
+                    vtx.electron_energy = hit1lay1.GetEnergy() + hit1lay2.GetEnergy()
+                    vtx.positron_energy = hit2lay1.GetEnergy() + hit2lay2.GetEnergy()
+
+                    gamma_dir = vtx.ComputeIncomingGammaDirection()
+                    vtx.gamma_dir = gamma_dir
+
+                    true_dir = initial_vector_function(theta, phi)
+
+                    #print(f"Event {RE.GetEventID()}: Reconstructed gamma direction: {gamma_dir}, True gamma direction: {true_dir}, Angle between: {np.arccos(np.clip(np.dot(gamma_dir, true_dir), -1.0, 1.0)) * 180/np.pi:.2f} degrees")
                     Vertices.append(vtx)
+
+                    vtx.vertex_type = 'type_2ht2ht' # assigning a type to the event for histogramming purposes
 
         '''
         ENDS HERE
@@ -577,68 +673,45 @@ class VertexFinder:
         #print("Number of events with two hits in two layers after dead material conversion:", self.two_hit_in_two_layers_after_dead_material_counter)
         
         return Vertices
-    
-    
-    def PlotVertexHistogram(self, NumberOfVerticesPerEvent, inputfile):
-
-        # ------------------------------
-        # Plot histogram of the number of vertices per event.
-
-        # Parameters:
-        #    NumberOfVerticesPerEvent (list): List of vertex counts per event.
-        #    inputfile (str): Filename prefix for saving the plot.
-        # ------------------------------
-
-        if not NumberOfVerticesPerEvent:
-            print("No vertex data to plot.")
-            return
-
-        plt.figure(figsize=(8, 5))
-        plt.hist(NumberOfVerticesPerEvent, bins=np.arange(0, max(NumberOfVerticesPerEvent)+2), edgecolor='black')
-        plt.xlabel("Number of vertices per event")
-        plt.ylabel("Number of events")
-        plt.title(f"Histogram: Number of Vertices per Gamma-Ray Event - {self.NumberOfLayers} Layers")
-        plt.tight_layout()
-        plt.savefig(f"{inputfile}_VerticesHistogram_{self.NumberOfLayers}Layers.png", dpi=300)
-        plt.show()
 
     def TopVertex(self, vertex_list):
+        '''
+        Select the top-most vertex (minimum z value) from a list of vertex candidates
+        ---------------------------------------------------------------
+        Parameters:
+            vertex_list (list): List of Vertex objects
 
-        # ------------------------------
-        # Select the top-most vertex (max Z).
+        Returns:
+            Vertex: The vertex with the highest Z position
+        '''
 
-        # Parameters:
-        #    vertex_list (list): List of Vertex objects.
-
-        # Returns:
-        #    Vertex: The vertex with the highest Z position.
-        # ------------------------------
-
-        return max(vertex_list, key=lambda v: v.GetZPosition())        
+        return min(vertex_list, key=lambda v: v.GetZPosition())        
 
 '''
-THIS SECTION IS FOR EVENT PLOTTING
+(d) EVENTPLOTTING CLASS
 '''
 class EventPlotting:
-
-    # ------------------------------
-    # Handles plotting and data extraction from simulated and reconstructed gamma-ray events.
-    # Used for comparing true (simulated) and reconstructed hits and vertices.
-    # ------------------------------
+    '''
+    Handles plotting and data extraction from simulated and reconstructed gamma-ray events.
+    Used for comparing true (simulated) and reconstructed hits and vertices.
+    '''
 
     def __init__(self, inputfile, Geometry):
         self.inputfile = inputfile
         self.Geometry = Geometry
 
     def GetSimHits(self):
+        '''
+        Extract simulated HT hits from a .sim.gz file
+        --------------------------------------------------------------
+        Parameters:
+            None (uses self.inputfile for the path to the SIM file)
 
-        # ------------------------------
-        # Extract simulated HT hits from a .sim.gz file.
+        Returns:
+            tuple of dicts: (HTXPosition, HTYPosition, HTZPosition) per event ID
+        '''
 
-        # Returns:
-        #    tuple of dicts: (HTXPosition, HTYPosition, HTZPosition) per event ID.
-        # ------------------------------
-
+        # Initializing dictionaries to hold hit positions for each event ID
         HTXPosition = {}
         HTYPosition = {}
         HTZPosition = {}
@@ -652,6 +725,7 @@ class EventPlotting:
         CurrentEventID = None
         ExpectEventID = False
 
+        # Assigning event ID keys to the dictionaries
         HTXPosition[CurrentEventID] = []
         HTYPosition[CurrentEventID] = []
         HTZPosition[CurrentEventID] = []
@@ -723,19 +797,19 @@ class EventPlotting:
                         PositronHTZ[CurrentEventID].append(ZPositionColumn)
 
         return (HTXPosition, HTYPosition, HTZPosition, ElectronHTX, ElectronHTY, ElectronHTZ, PositronHTX, PositronHTY, PositronHTZ) 
+    
     def GetRESEEvents(self, Geometry, inputfile, MaxNumberOfEvents=None):
+        '''
+        Extract clustered and noised RESE hits from a SIM file using MEGAlib evta reader
+        --------------------------------------------------------------
+        Parameters:
+            Geometry (MGeometry): Detector geometry object
+            inputfile (str): Path to the SIM file
+            MaxNumberOfEvents (int, optional): Stop after this many events
 
-        # ------------------------------
-        # Extract clustered and noised RESE hits from a SIM file using MEGAlib evta reader
-
-        # Parameters:
-        #    Geometry (MGeometry): Detector geometry object.
-        #    inputfile (str): Path to the SIM file.
-        #    MaxNumberOfEvents (int, optional): Stop after this many events.
-
-        # Returns:
-        #    dict: {EventID: [(X, Y, Z, marker, label)]}
-        # ------------------------------
+        Returns:
+            dict: {EventID: [(X, Y, Z, marker, label)]}
+        '''
 
         # Getting the noised and clustered events
         Reader = M.MFileEventsEvta(self.Geometry)
@@ -797,17 +871,18 @@ class EventPlotting:
         return RESEData
 
     def PlottingSimAndRESEs(self, EventID, EHTX, EHTY, EHTZ,  PHTX, PHTY, PHTZ, RESEHits, Vertices, MCPoints=None):
-
-        # ------------------------------
-        # Plot 3D view of simulated (MC) hits, RESE hits, identified vertices, and true MC vertex.
-
-        # Parameters:
-        #    EventID (int): ID of the event to visualize.
-        #    HTX, HTY, HTZ (dict): Simulated hit positions.
-        #    RESEHits (dict): Clustered RESE hits from reconstruction.
-        #    Vertices (list): Vertex objects for this event.
-        #    MCPoints (dict, optional): True MC interaction point per event.
-        # ------------------------------
+        '''
+        3D plot of simulated (MC) hits (electron and positron), RESE hits, identified vertices, and MC interaction 
+        point (if provided) for a given event ID
+        --------------------------------------------------------------
+        Parameters:
+            EventID (int): ID of the event to plot
+            EHTX, EHTY, EHTZ (dict): Simulated electron hit positions
+            PHTX, PHTY, PHTZ (dict): Simulated positron hit positions
+            RESEHits (dict): RESE hits from reconstruction (either clustered or not clustered)
+            Vertices (list): Vertex objects for this event
+            MCPoints (dict, optional): True MC interaction point per event
+        '''
 
         fig = plt.figure(figsize=(10, 10))
         ax = fig.add_subplot(111, projection='3d')
@@ -817,7 +892,7 @@ class EventPlotting:
         ax.set_zlabel("Z [cm]")
 
         '''
-        UNCOMMENT TO SHOW MC HITS (without e- / e+ distinction)
+        UNCOMMENT THIS SECTION TO SHOW MC HITS (without e- / e+ distinction)
         if EventID in HTX and HTX[EventID]:
             ax.scatter(HTX[EventID], HTY[EventID], HTZ[EventID], c='blue', marker='o', s=20, alpha=0.3, label='MC HT Hits')
         '''
@@ -872,23 +947,86 @@ class EventPlotting:
     
         plt.tight_layout()
         plt.show()
+    
+    def PlotGammaRayReconstructionHistogram(self, all_angle_differences, oneht_twoht_angles=None, twoht_twoht_angles=None, revan_angles=None): # , revan_angle_differencess
+        '''
+        Plot histogram of angle differences between reconstructed and true gamma-ray directions
+        --------------------------------------------------------------
+        Parameters:
+            angle_differences (list): List of angle differences (between reconstructed and actual) in degrees
+            inputfile (str): filename
+        
+        Returns:
+            None (displays a histogram plot)
+        '''
+
+        all_values = all_angle_differences.copy()
+        if oneht_twoht_angles:
+            all_values += oneht_twoht_angles
+        if twoht_twoht_angles:
+            all_values += twoht_twoht_angles
+        if revan_angles:
+            all_values += revan_angles
+
+        binwidth = 1
+        bins = np.arange(min(all_values), max(all_values) + binwidth, binwidth)
+
+        # Plot each histogram
+        # plt.hist(all_angle_differences, bins=bins, alpha=1, linewidth=2, edgecolor='black', cumulative=True, density=True, histtype='step', label='All reconstructed events (current logic)')
+
+        if oneht_twoht_angles:
+            plt.hist(oneht_twoht_angles, bins=bins, alpha=1, linewidth=2, edgecolor='blue', cumulative=True, density=True, histtype='step', label='1 hit 2 hit')
+
+        if twoht_twoht_angles:
+            plt.hist(twoht_twoht_angles, bins=bins, alpha=1, linewidth=2, edgecolor='red', cumulative=True, density=True, histtype='step', label='2 hit 2 hit')
+            
+        if revan_angles:
+            plt.hist(revan_angle_differences, bins=bins, alpha=1, linewidth=2, edgecolor='green', cumulative=True, density=True, histtype='step', label='All Revan reconstructed events')
+
+        plt.xlabel("Angle difference between reconstructed and true gamma-ray direction [degrees]")
+        plt.ylabel("Normalized # events")
+        plt.title("Gamma-Ray Reconstruction Accuracy")
+        plt.legend()
+        plt.grid(linestyle='--')
+        plt.tight_layout()
+        plt.show()
+    
+    def PlotVertexHistogram(self, NumberOfVerticesPerEvent, inputfile):
+        '''
+        Plot histogram of the number of vertices per event
+        --------------------------------------------------------------
+        Parameters:
+            NumberOfVerticesPerEvent (list): List of vertex counts per event
+            inputfile (str): Filename prefix for saving the plot
+        '''
+
+        if not NumberOfVerticesPerEvent:
+            print("No vertex data to plot.")
+            return
+
+        plt.figure(figsize=(8, 5))
+        plt.hist(NumberOfVerticesPerEvent, bins=np.arange(0, max(NumberOfVerticesPerEvent)+2), edgecolor='black')
+        plt.xlabel("Number of vertices per event")
+        plt.ylabel("Number of events")
+        plt.title(f"Histogram: Number of Vertices per Gamma-Ray Event - {self.NumberOfLayers} Layers")
+        plt.tight_layout()
+        plt.savefig(f"{inputfile}_VerticesHistogram_{self.NumberOfLayers}Layers.png", dpi=300)
+        plt.show()
 
 '''
-ALSO WANT TO EXTRACT "TRUE" INTERACTION POINT
+(e) MCINTERACTION CLASS
 '''
 class MCInteraction: # does not NEED to be a class -> this is mostly just for organizational purposes
-
     def GetMCInteractionPoints(inputfile):
+        '''
+        Extracts the true interaction points from a .sim.gz file
+        --------------------------------------------------------------
+        Parameters:
+            inputfile (str): Path to the input .sim.gz file
 
-        # ------------------------------
-        # Extracts the 'true' interaction points from a .sim.gz file.
-
-        # Args:
-        #    inputfile (str): Path to the input .sim.gz file.
-
-        # Returns:
-        #    dict: Dictionary mapping EventID to its true MC interaction point as a NumPy array [x, y, z].
-        # ------------------------------
+        Returns:
+            dict: Dictionary mapping EventID to its true MC interaction point as a NumPy array [x, y, z]
+        '''
 
         MCPoints = {}
         CurrentEventID = None
@@ -930,15 +1068,17 @@ class MCInteraction: # does not NEED to be a class -> this is mostly just for or
         return MCPoints
 
     def PlotVertexResiduals(MCPoints, VertexDict, EventNumberToEventID=None):
-
-        # ------------------------------
-        # Plots residuals between identified vertex positions and true MC interaction points.
-
-        # Args:
-        #    MCPoints (dict): Dictionary of true MC points from `get_mc_interaction_points`.
-        #    VertexDict (dict): Dictionary mapping EventID to list of identified Vertex objects.
-        #    EventNumberToEventID (dict, optional): Mapping the event number to the event ID.
-        # ------------------------------
+        '''
+        Plots residuals between identified vertex positions and true MC interaction points
+        --------------------------------------------------------------
+        Parameters:
+            MCPoints (dict): Dictionary of true MC points from `get_mc_interaction_points`
+            VertexDict (dict): Dictionary mapping EventID to list of identified Vertex objects
+            EventNumberToEventID (dict, optional): Mapping the event number to the event ID
+        
+        Returns:
+            None (displays histogram and scatter plots of residuals)
+        '''
 
         Residuals = []
         EventResidualPairs = []
@@ -1019,26 +1159,6 @@ class MCInteraction: # does not NEED to be a class -> this is mostly just for or
         plt.show()
 
 '''
-FUNCTION FOR THE MODULATION FIT -> need? have sep. file
-'''
-def polarfit(x, A, phi0, N):
-
-    # ------------------------------
-    # Fit function for azimuthal modulation of pair production events.
-    # Parameters:
-    #    phi (float or ndarray): Azimuthal angle(s) in radians.
-    #    A (float): Modulation amplitude.
-    #    phi0 (float): Modulation phase offset (in radians).
-    #    N (float): Normalization factor
-
-    # Returns:
-    #    float or ndarray: Value(s) of the modulation function at phi.
-    # ------------------------------
-
-    return N / (2 * np.pi) * (1 - A * np.cos(2 * (x - phi0)))
-
-
-'''
 MAIN FUNCTION FOR EXECUTION IN TERMINAL
 '''
 if __name__ == "__main__":
@@ -1048,15 +1168,12 @@ if __name__ == "__main__":
     G = M.MGlobal()
     G.Initialize()
 
-    # ------------------------------
-    # Command line argument options with descriptions for each.
-    # ------------------------------
-
+    # Command-line argument parsing
     parser = argparse.ArgumentParser(description="Process a .sim.gz file from MEGAlib Cosima output.")
     parser.add_argument("inputfile", help="Enter path to desired input file.")
     parser.add_argument("--plot-event-number", type=int, default=None, help="Enter the desired event number (not event ID) to be plotted.")
     parser.add_argument("--plot-eventID", type=int, default = None, help="Enter the desired event ID (not event number) to be plotted.  ")
-    parser.add_argument('--layers', type=int, default=2, help='Enter desired number of layers to classify vertex. Default is 2.')
+    parser.add_argument('--layers', type=int, default=2, help='Enter desired number of layers with 2+ hits to classify vertex (for one hit, two hit morphology). Default is 2.')
     parser.add_argument('--plot-histogram', action='store_true', help='Plot number of vertices per event histogram.')
     parser.add_argument('--plot-residuals', action='store_true', help='Plot residuals between MC and reconstructed vertex.')
     parser.add_argument('--plot-events', action='store_true', help='Plot individual event visualizations.')
@@ -1064,10 +1181,10 @@ if __name__ == "__main__":
     parser.add_argument('--theta', type=float, default=0.0, help='Polar angle theta (in degrees) of the incoming gamma-ray (default: 0 degrees)')
     parser.add_argument('--phi', type=float, default=0.0, help='Azimuthal angle phi (in degrees) of the incoming gamma-ray (default: 0 degrees)')
     parser.add_argument('--plot-distance-dist', action='store_true', help='Plot distance distribution of hits relative to virtual hit in the layer below vertex')
-    parser.add_argument('--modulation-fit', action='store_true', help='Enable modulation fit plot')
+    parser.add_argument('--gr-hist', action='store_true', help='Plot histogram of angle differences between reconstructed and true gamma-ray directions')
 
-    # Loading in the required geometry (AMEGO-X for this analysis)
-    GeometryName = "../../MEGAlib_Data/Geometry/AMEGO_Midex/AmegoXBase.geo.setup"
+    # Loading in the required geometry (AMEGO-X for this analysis, can change to desired geometry)
+    GeometryName = "../Geometry/AMEGO_Midex/AmegoXBase.geo.setup"
     Geometry = M.MGeometryRevan()
     if Geometry.ScanSetupFile(M.MString(GeometryName)):
         print("Geometry " + GeometryName + " loaded!")
@@ -1115,10 +1232,12 @@ if __name__ == "__main__":
 
     EP = EventPlotting(inputfile, Geometry)
     HTX, HTY, HTZ, ElectronHTX, ElectronHTY, ElectronHTZ, PositronHTX, PositronHTY, PositronHTZ = EP.GetSimHits()
+
+    all_vertices = []
     # Reading each event and stopping if none left, rejecting "invalid" events (as identified in MEGAlib)
     while True:
         RE = Reader.GetNextEvent()
-        M.SetOwnership(RE, True) # necessary to avoid memory leakspython3 Ver
+        M.SetOwnership(RE, True) # necessary to avoid memory leaks
 
         if not RE:
             print("No more events.")
@@ -1139,6 +1258,7 @@ if __name__ == "__main__":
         # Getting the vertices and assigning each to its corresponding event ID -> VertexDict
         Vertices = VF.FindVertices(ClusteredRE, theta=args.theta, phi=args.phi)
         VertexDict[RE.GetEventID()] = Vertices 
+        all_vertices.extend(Vertices)
 
         if Vertices:
             top_vertex = VF.TopVertex(Vertices)
@@ -1197,6 +1317,63 @@ if __name__ == "__main__":
             gc.collect()
             print(f"Processed {EventCount} events...", flush=True)
 
+    # Compute true direction
+    true_dir = initial_vector_function(args.theta, args.phi)
+
+    all_angle_differences = []
+    oneht_twoht_angles = []
+    twoht_twoht_angles = []
+
+    for vtx in all_vertices:
+        cos_angle = np.clip(np.dot(vtx.gamma_dir, true_dir), -1.0, 1.0)
+        angle_deg = np.degrees(np.arccos(cos_angle))
+
+        all_angle_differences.append(angle_deg)
+
+        if hasattr(vtx, "vertex_type"):
+            if vtx.vertex_type == "type_1ht2ht":
+                oneht_twoht_angles.append(angle_deg)
+            elif vtx.vertex_type == "type_2ht2ht":
+                twoht_twoht_angles.append(angle_deg)
+
+    # Compute mean reconstructed direction
+    if all_vertices:
+        mean_dir = np.mean([vtx.gamma_dir for vtx in all_vertices], axis=0)
+        mean_dir /= np.linalg.norm(mean_dir)
+    else:
+        mean_dir = None
+
+    # plotting the histogram for reconstructed gamma rays  
+    if args.gr_hist:
+        EP.PlotGammaRayReconstructionHistogram(all_angle_differences, oneht_twoht_angles, twoht_twoht_angles)
+        print("\n--------- OVERALL RECONSTRUCTION PERFORMANCE ---------")
+        print("Total # of reconstructed events:", len(all_vertices))
+        print("Average reconstructed direction:", mean_dir)
+        print("True direction (from MC input):", true_dir)
+        print("Median angle between reconstructed and MC truth:", f"{np.median(all_angle_differences):.3f} degrees")
+
+        # PERCENTILE CALCULATIONS
+        allpercentile68 = np.percentile(all_angle_differences, 68) 
+        print(f"68th percentile angle difference for all reconstructed events: {allpercentile68:.3f} degrees")
+        # -----------------------------
+        if len(oneht_twoht_angles) > 0:
+            oneht2htpercentile68 = np.percentile(oneht_twoht_angles, 68) 
+            print(f"68th percentile angle difference for 1 hit 2 hit events: {oneht2htpercentile68:.3f} degrees")
+        else:
+            oneht2htpercentile68 = None
+            print("No 1 hit 2 hit events found; cannot compute 68th percentile.")
+        # -----------------------------
+        if len(twoht_twoht_angles) > 0:
+            twoht2htpercentile68 = np.percentile(twoht_twoht_angles, 68)
+            print(f"68th percentile angle difference for 2 hit 2 hit events: {twoht2htpercentile68:.3f} degrees")
+        else:
+            twoht2htpercentile68 = None
+            print("No 2 hit 2 hit events found; cannot compute 68th percentile.")
+        
+        #print(f"68th percentile angle difference for 2 hit 2 hit events: {twoht2htpercentile68:.3f} degrees")
+
+        #revanpercentile68 = np.percentile(revan_angle_differences, 68) 
+
     # Write out the leftover azimuthal angles into the output file
     if event_id_list:
         with open(output_phi_filename, 'a') as f:
@@ -1231,45 +1408,8 @@ if __name__ == "__main__":
 
     print(f"Scanned {EventCount} events")
 
-    if phi_values and args.modulation_fit:
-        plt.figure(figsize=(8, 5))
-        plt.hist(phi_values, bins=np.linspace(-np.pi, np.pi, 17), range=(-np.pi, np.pi), edgecolor='black', density=True)
-        plt.xlabel(r"Azimuthal angle $\phi$")
-        plt.ylabel('Counts')
-        plt.title(r"Distribution of Azimuthal Angle $\phi$")
-        plt.tight_layout()
-        plt.show()
-
-        hist, bins = np.histogram(phi_values, bins=np.linspace(-np.pi, np.pi, 17))
-        yerr = np.sqrt(hist)
-        x = .5*(bins[:-1]+bins[1:]) # bin centers
-        plt.errorbar(x, hist, yerr=yerr, label="data", fmt ='o')
-
-        try:
-            popt, pcov = curve_fit(polarfit, x, hist, sigma=yerr, absolute_sigma=True)
-            A_fit, phi0_fit, N_fit = popt
-            dA, dphi0, dN = np.sqrt(np.diag(pcov))
-            print(f"A     = {A_fit:.3f} ± {dA:.3f}")
-            print(f"phi_0 = {phi0_fit:.3f} ± {dphi0:.3f} rad")
-            print(f"N     = {N_fit:.1f} ± {dN:.1f}")
-
-            # Plot the fit
-            xx = np.linspace(-np.pi, np.pi, 500)
-            plt.plot(xx, polarfit(xx, *popt), 'r--', label='Polarization Fit')
-
-        except RuntimeError:
-            print("Fit failed. Not enough statistics or poor modulation.")
-
-        plt.legend()
-        plt.xlabel(r"Azimuthal angle $\phi$ [rad]")
-        plt.ylabel('Counts per bin')
-        plt.title('Polarization Modulation Fit')
-        plt.tight_layout()
-        plt.show()
-        print('Number of phi values:', len(phi_values))
-
     if args.plot_histogram:
-        VF.PlotVertexHistogram(NumberOfVerticesPerEvent, inputfile)
+        EP.PlotVertexHistogram(NumberOfVerticesPerEvent, inputfile)
 
     if args.plot_events:
         print("Accessing simulated and RESE hits...")
@@ -1298,8 +1438,7 @@ if __name__ == "__main__":
             event_id_to_plot = args.plot_eventID
             if event_id_to_plot in SharedEventID:
                 print(f"Plotting event with Event ID {event_id_to_plot}")
-                EP.PlottingSimAndRESEs(event_id_to_plot, HTX, HTY, HTZ, RESEHits, 
-                                    VertexDict.get(event_id_to_plot, []), MCPoints=MCPoints)
+                EP.PlottingSimAndRESEs(event_id_to_plot, ElectronHTX, ElectronHTY, ElectronHTZ, PositronHTX, PositronHTY, PositronHTZ, RESEHits, VertexDict.get(event_id_to_plot, []), MCPoints=MCPoints)
             else:
                 print(f"Event ID {event_id_to_plot} not found in data.")
 
@@ -1308,8 +1447,7 @@ if __name__ == "__main__":
                 event_id_to_plot = EventNumberToEventID[plot_event_number]
                 if event_id_to_plot in SharedEventID:
                     print(f"Plotting event number {plot_event_number} (Event ID {event_id_to_plot})")
-                    EP.PlottingSimAndRESEs(event_id_to_plot, HTX, HTY, HTZ, RESEHits, 
-                                        VertexDict.get(event_id_to_plot, []), MCPoints=MCPoints)
+                    EP.PlottingSimAndRESEs(event_id_to_plot, HTX, HTY, HTZ, RESEHits, VertexDict.get(event_id_to_plot, []), MCPoints=MCPoints)
                 else:
                     print(f"Event ID {event_id_to_plot} has no RESE data.")
             else:
@@ -1317,11 +1455,14 @@ if __name__ == "__main__":
         else:
             print("No specific event specified. Plotting all events.")
             for Event_ID in SharedEventID:
-                EP.PlottingSimAndRESEs(Event_ID, ElectronHTX, ElectronHTY, ElectronHTZ, PositronHTX, PositronHTY, PositronHTZ, RESEHits, 
-                                    VertexDict.get(Event_ID, []), MCPoints=MCPoints)
+                EP.PlottingSimAndRESEs(Event_ID, ElectronHTX, ElectronHTY, ElectronHTZ, PositronHTX, PositronHTY, PositronHTZ, RESEHits, VertexDict.get(Event_ID, []), MCPoints=MCPoints)
 
     if args.plot_residuals:
         # Only parse MC points if not already done above
         if not args.plot_events:
             MCPoints = MCInteraction.GetMCInteractionPoints(inputfile)
         MCInteraction.PlotVertexResiduals(MCPoints, VertexDict, EventNumberToEventID)
+
+'''
+End of file
+'''
