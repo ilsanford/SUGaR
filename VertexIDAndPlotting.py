@@ -1182,7 +1182,8 @@ if __name__ == "__main__":
     parser.add_argument('--phi', type=float, default=0.0, help='Azimuthal angle phi (in degrees) of the incoming gamma-ray (default: 0 degrees)')
     parser.add_argument('--plot-distance-dist', action='store_true', help='Plot distance distribution of hits relative to virtual hit in the layer below vertex')
     parser.add_argument('--gr-hist', action='store_true', help='Plot histogram of angle differences between reconstructed and true gamma-ray directions')
-
+    parser.add_argument('--revan', type=bool, default=False, help='Enter True to include Revan reconstructed events in the gamma-ray reconstruction histogram (requires Revan reconstruction to have already been run on the same input file)')
+    
     # Loading in the required geometry (AMEGO-X for this analysis, can change to desired geometry)
     GeometryName = "../Geometry/AMEGO_Midex/AmegoXBase.geo.setup"
     Geometry = M.MGeometryRevan()
@@ -1234,6 +1235,16 @@ if __name__ == "__main__":
     HTX, HTY, HTZ, ElectronHTX, ElectronHTY, ElectronHTZ, PositronHTX, PositronHTY, PositronHTZ = EP.GetSimHits()
 
     all_vertices = []
+
+    # Setting up file names
+    if inputfile.endswith('.sim.gz'):
+        base_filename = inputfile[:-7]
+        filetype  = '.sim.gz'
+    elif inputfile.endswith('.sim'):
+        base_filename = inputfile[:-4]
+        filetype = '.sim'
+    else:
+        raise ValueError('Input file must be of type .sim or .sim.gz')
     # Reading each event and stopping if none left, rejecting "invalid" events (as identified in MEGAlib)
     while True:
         RE = Reader.GetNextEvent()
@@ -1345,7 +1356,13 @@ if __name__ == "__main__":
 
     # plotting the histogram for reconstructed gamma rays  
     if args.gr_hist:
-        EP.PlotGammaRayReconstructionHistogram(all_angle_differences, oneht_twoht_angles, twoht_twoht_angles)
+        if args.revan is True:
+            revan_angle_differences = np.loadtxt(f"{base_filename}_revan_angle_differences.txt") # load in the Revan angle differences from the text file
+            revan_angle = revan_angle_differences.tolist() # convert to list for histogramming
+            EP.PlotGammaRayReconstructionHistogram(all_angle_differences, oneht_twoht_angles, twoht_twoht_angles, revan_angles=revan_angle) # histogramming with revan info
+        else:
+            EP.PlotGammaRayReconstructionHistogram(all_angle_differences, oneht_twoht_angles, twoht_twoht_angles) # histogramming without revan info
+        
         print("\n--------- OVERALL RECONSTRUCTION PERFORMANCE ---------")
         print("Total # of reconstructed events:", len(all_vertices))
         print("Average reconstructed direction:", mean_dir)
@@ -1353,12 +1370,18 @@ if __name__ == "__main__":
         print("Median angle between reconstructed and MC truth:", f"{np.median(all_angle_differences):.3f} degrees")
 
         # PERCENTILE CALCULATIONS
-        allpercentile68 = np.percentile(all_angle_differences, 68) 
-        print(f"68th percentile angle difference for all reconstructed events: {allpercentile68:.3f} degrees")
+        if len(all_angle_differences) > 0:
+            allpercentile68 = np.percentile(all_angle_differences, 68) 
+            print(f"68th percentile angle difference for all reconstructed events: {allpercentile68:.3f} degrees")
+            np.save(f"{inputfile}_all_angle_differences.npy", np.array(all_angle_differences))
+        else:
+            allpercentile68 = None
+            print("No reconstructed events found; cannot compute 68th percentile.")
         # -----------------------------
         if len(oneht_twoht_angles) > 0:
             oneht2htpercentile68 = np.percentile(oneht_twoht_angles, 68) 
             print(f"68th percentile angle difference for 1 hit 2 hit events: {oneht2htpercentile68:.3f} degrees")
+            np.save(f"{inputfile}_oneht_twoht_angles.npy", np.array(oneht_twoht_angles))
         else:
             oneht2htpercentile68 = None
             print("No 1 hit 2 hit events found; cannot compute 68th percentile.")
@@ -1366,13 +1389,16 @@ if __name__ == "__main__":
         if len(twoht_twoht_angles) > 0:
             twoht2htpercentile68 = np.percentile(twoht_twoht_angles, 68)
             print(f"68th percentile angle difference for 2 hit 2 hit events: {twoht2htpercentile68:.3f} degrees")
+            np.save(f"{inputfile}_twoht_twoht_angles.npy", np.array(twoht_twoht_angles))
         else:
             twoht2htpercentile68 = None
             print("No 2 hit 2 hit events found; cannot compute 68th percentile.")
-        
-        #print(f"68th percentile angle difference for 2 hit 2 hit events: {twoht2htpercentile68:.3f} degrees")
-
-        #revanpercentile68 = np.percentile(revan_angle_differences, 68) 
+        # -----------------------------
+        if args.revan is True and len(revan_angle_differences) > 0:
+            revanpercentile68 = np.percentile(revan_angle_differences, 68)
+            print(f"68th percentile angle difference for Revan reconstructed events: {revanpercentile68:.3f} degrees")
+        elif args.revan is True:
+            print("No Revan reconstructed events found in provided file. Cannot compute 68th percentile.")
 
     # Write out the leftover azimuthal angles into the output file
     if event_id_list:
