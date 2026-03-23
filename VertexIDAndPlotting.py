@@ -29,6 +29,11 @@ import argparse
 import numpy as np
 import os
 import gc
+import seaborn as sns
+
+# setting font to times new roman
+plt.rcParams["font.family"] = "serif"
+plt.rcParams["font.serif"] = ["Times New Roman", "Times", "DejaVu Serif", "serif"]
 
 '''
 (a) VERTEX CLASS
@@ -168,7 +173,7 @@ class Vertex:
         E1 = self.electron_energy
         E2 = self.positron_energy
 
-        gamma_dir = -(E1 * d1 + E2 * d2) / (E1 + E2) # energy-weighted reconstruction 
+        gamma_dir = -(E1* d1 + E2* d2)/(E1 + E2) # energy-weighted reconstruction
         gamma_dir /= np.linalg.norm(gamma_dir)
 
         self.gamma_dir = gamma_dir
@@ -444,32 +449,31 @@ class VertexFinder:
             list: List of Vertex objects found in the event
         '''
 
+        # -------- REVAN-STYLE LOGIC --------- #
         Vertices = []
 
         # Filter RESEs to those in tracker with energy > 0
-        RESEs = [
-            RE.GetRESEAt(i) for i in range(RE.GetNRESEs())
-            if self.IsInTracker(RE.GetRESEAt(i)) and RE.GetRESEAt(i).GetEnergy() > 0
-        ]
+        RESEs = [RE.GetRESEAt(i) for i in range(RE.GetNRESEs())
+            if self.IsInTracker(RE.GetRESEAt(i)) and RE.GetRESEAt(i).GetEnergy() > 0]
 
         # Sorting by depth in the tracker: shallowest -> deepest (larger z-position value is shallower)
         RESEs.sort(key=lambda rese: rese.GetPosition().Z(), reverse=True)
 
         vertex_created_for_event = False # determine whether or not a vertex was assigned to an event
 
+        # for events that have a one hit two hit morphology, apply the subsequent logic
         for candidate in RESEs:
-            # Determine if the hit is the only one in that layer
             OnlyHitInLayer = True
             for rese in RESEs:
-                if rese == candidate:
+                if rese == candidate: # skip if the hit is the candidate itself
                     continue
-                if self.Geometry.AreInSameLayer(candidate, rese):
-                    OnlyHitInLayer = False
+                if self.Geometry.AreInSameLayer(candidate, rese): # skip if there is another hit in the same layer as the candidate
+                    OnlyHitInLayer = False # now this becomes false
                     break
-            if not OnlyHitInLayer:
+            if not OnlyHitInLayer: # if there are multiple hits in the candidate layer, reject
                 continue 
 
-            NBelow = [0] * self.SearchRange
+            NBelow = [0] * self.SearchRange 
             NAbove = [0] * self.SearchRange
 
             for rese in RESEs:
@@ -517,7 +521,7 @@ class VertexFinder:
             SearchLayers = 5 # CHANGE THIS FOR DESIRED NUMBER OF LAYERS BELOW CANDIDATE BEFORE 2+ HITS REQUIREMENT IS ENFORCED (new logic)
 
             for Distance in range(1, SearchLayers+1):
-                layer_hits = [rese for rese in RESEs if self.Geometry.GetLayerDistance(candidate, rese) == -Distance]
+                layer_hits = [rese for rese in RESEs if self.Geometry.GetLayerDistance(candidate, rese) == -Distance] 
 
                 if len(layer_hits) >= 2:
                     selected_layer_hits = layer_hits
@@ -526,6 +530,17 @@ class VertexFinder:
 
             if selected_layer_hits is None:
                 continue
+            
+            layers_with_2plus_hits = 0
+            for Distance in range(selected_distance, selected_distance+40): # look for 2+ hits in subsequent layers (new logic)
+                layer_hits = [rese for rese in RESEs if self.Geometry.GetLayerDistance(candidate, rese) == -Distance] 
+                if len(layer_hits) >= 2: # CAN MAKE THIS MORE RESTRICTIVE TO EXACTLY TWO HITS
+                    layers_with_2plus_hits += 1 
+            
+            if layers_with_2plus_hits < 4: # require at least 4 layers with 2+ hits after the initially identified layer with 2+ hits
+                continue ### LOOK AT THIS ... make sure this is actually at 5
+
+            # -------- END REVAN-STYLE LOGIC --------- #
 
             # Project along MC direction to selected layer
             init_pos = np.array([candidate.GetPosition().X(),
@@ -538,8 +553,27 @@ class VertexFinder:
             z_target = candidate.GetPosition().Z() - selected_distance * interlayerdistance
             projected_point = project_to_layer(init_pos, init_dir, z_target)
 
-            # Choose best two hits in that layer
-            hit1, hit2, filtered_hits = select_two_closest_hits(selected_layer_hits, projected_point)
+            '''
+            The parts below are selecting specific event morphologies and using their geometry to reconstruct
+            the gamma-ray direction
+            '''
+            # for events whose first hit is followed by a layer with 2+ hits
+            if selected_distance == 1:
+                # Choose best two hits in that layer
+                hit1, hit2, filtered_hits = select_two_closest_hits(selected_layer_hits, projected_point)
+            
+            # for events that have multiple single hits before two hits, assign hit one AND hit two as the hit in the layer below single hit
+            if selected_distance > 1:
+                # Get hits in the layer immediately below the candidate
+                layer_hits_below = [rese for rese in RESEs if self.Geometry.GetLayerDistance(candidate, rese) == -selected_distance] # this is throwing out events
+
+                if len(layer_hits_below) >= 2:
+                    # Pick first two hits in that layer
+                    hit1 = layer_hits_below[0]
+                    hit2 = layer_hits_below[1]
+                else:
+                    hit1 = None
+                    hit2 = None
 
             if hit1 is None or hit2 is None:
                 continue
@@ -554,45 +588,83 @@ class VertexFinder:
             FINALLY, compute the electron/positron track directions for gamma-ray reconstruction
             '''
             if vtx is not None:
-                electron_track = np.array([hit1.GetPosition().X(),
-                                        hit1.GetPosition().Y(),
-                                        hit1.GetPosition().Z()]) \
-                                - np.array([vtx.x, vtx.y, vtx.z])
-                positron_track = np.array([hit2.GetPosition().X(),
-                                        hit2.GetPosition().Y(),
-                                        hit2.GetPosition().Z()]) \
-                                - np.array([vtx.x, vtx.y, vtx.z])
+                if selected_distance == 1: # handles events with 1ht followed by 2ht (typical morphology for pair production events)
+                    electron_track = np.array([hit1.GetPosition().X(),
+                                            hit1.GetPosition().Y(),
+                                            hit1.GetPosition().Z()]) \
+                                    - np.array([vtx.x, vtx.y, vtx.z])
+                    positron_track = np.array([hit2.GetPosition().X(),
+                                            hit2.GetPosition().Y(),
+                                            hit2.GetPosition().Z()]) \
+                                    - np.array([vtx.x, vtx.y, vtx.z])
+                
+                # in order to reconstruct the gamma-ray for events that have single hits, reconstruct by drawing a line from the vertex to the single hit and treating that as both the electron and positron track
+                # for 1ht-1ht events, use the first two recorded hits to define gamma-ray direction
+                if selected_distance > 1 and len(RESEs) >= 2: # handles cases wehre there are multiple single hits before the two hits
+                    first_hit = RESEs[0] # first hit in the event
+                    second_hit = RESEs[1] # second hit in the event
+
+                    first_hit_pos = np.array([first_hit.GetPosition().X(),
+                            first_hit.GetPosition().Y(),
+                            first_hit.GetPosition().Z()])
+                    second_hit_pos = np.array([second_hit.GetPosition().X(),
+                                            second_hit.GetPosition().Y(),
+                                            second_hit.GetPosition().Z()])
+                    
+                    best_track = np.array([vtx.x, vtx.y, vtx.z]) - first_hit_pos
+                    alternate_track = second_hit_pos - np.array([vtx.x, vtx.y, vtx.z])
+
+                    if np.allclose(first_hit_pos, np.array([vtx.x, vtx.y, vtx.z])):
+                        electron_track = alternate_track
+                        positron_track = alternate_track
+                    elif np.allclose(second_hit_pos, np.array([vtx.x, vtx.y, vtx.z])):
+                        electron_track = best_track
+                        positron_track = best_track
+                    else:
+                        electron_track = best_track
+                        positron_track = best_track
+                    
+                    electron_track /= np.linalg.norm(electron_track)
+                    positron_track /= np.linalg.norm(positron_track)
+                    gr_direction = -(electron_track + positron_track)
+                    gr_direction /= np.linalg.norm(gr_direction)
+
+                    #print(f"Event {RE.GetEventID()}: Gamma-ray direction: {gr_direction}, Angle between: {np.arccos(np.clip(np.dot(gr_direction, init_dir), -1.0, 1.0)) * 180/np.pi:.2f} degrees")
+            
 
                 # Normalize directions
                 vtx.electron_dir = electron_track / np.linalg.norm(electron_track)
                 vtx.positron_dir = positron_track / np.linalg.norm(positron_track)
 
-                vtx.electron_energy = hit1.GetEnergy()
-                vtx.positron_energy = hit2.GetEnergy()
-
+                if selected_distance == 1:
+                    vtx.vertex_type = 'type_1ht2ht' # assigning a type to the event for histogramming purposes 
+                    vtx.electron_energy = hit1.GetEnergy()
+                    vtx.positron_energy = hit2.GetEnergy()
+                if selected_distance > 1:
+                    vtx.vertex_type = 'type_1ht1ht' 
+                    vtx.electron_energy = first_hit.GetEnergy()
+                    vtx.positron_energy = first_hit.GetEnergy()
+                
                 vtx.gamma_dir = vtx.ComputeIncomingGammaDirection()
-                vtx.vertex_type = 'type_1ht2ht' # assigning a type to the event for histogramming purposes 
                 true_dir = initial_vector_function(theta, phi)
             
         '''
         SOME NEW LOGIC STARTS HERE
         '''
-        # New logic for events that did not have a vertex assigned
+        # New logic for events that did not have a vertex assigned (2ht 2ht morphology)
         if not vertex_created_for_event:
             
             # Identify the topmost layer in the event
-            shallowest_z = max(rese.GetPosition().Z() for rese in RESEs)
+            #shallowest_z = max(rese.GetPosition().Z() for rese in RESEs)
+            top_hit = RESEs[0]
 
-            hits_in_first_layer = [rese for rese in RESEs if abs(rese.GetPosition().Z()-shallowest_z) < 0.01] # in same layer as the shallowest hit
+            hits_in_first_layer = [rese for rese in RESEs if self.Geometry.GetLayerDistance(rese, top_hit) == 0] # in same layer as the shallowest hit
 
-            if len(hits_in_first_layer) == 2:
+            if len(hits_in_first_layer) == 2: # restricting to only allow exactly two hits in the top layer
 
                 self.two_hit_after_dead_material_counter += 1
 
                 hit1, hit2 = hits_in_first_layer
-
-                if not self.Geometry.AreInSameLayer(hit1, hit2):
-                    print("Z-close but different layer:", RE.GetEventID())
 
                 # Now look for hits in the layer immediately below
                 hits_in_layer_below = [rese for rese in RESEs
@@ -948,7 +1020,7 @@ class EventPlotting:
         plt.tight_layout()
         plt.show()
     
-    def PlotGammaRayReconstructionHistogram(self, all_angle_differences, oneht_twoht_angles=None, twoht_twoht_angles=None, revan_angles=None): # , revan_angle_differencess
+    def PlotGammaRayReconstructionHistogram(self, all_angle_differences, oneht_twoht_angles=None, oneht_oneht_angles=None, twoht_twoht_angles=None, revan_angles=None): # , revan_angle_differencess
         '''
         Plot histogram of angle differences between reconstructed and true gamma-ray directions
         --------------------------------------------------------------
@@ -960,37 +1032,70 @@ class EventPlotting:
             None (displays a histogram plot)
         '''
 
-        all_values = all_angle_differences.copy()
+        all_values = []
         if oneht_twoht_angles:
             all_values += oneht_twoht_angles
+        if oneht_oneht_angles:
+            all_values += oneht_oneht_angles
         if twoht_twoht_angles:
             all_values += twoht_twoht_angles
-        if revan_angles:
-            all_values += revan_angles
 
         binwidth = 1
         bins = np.arange(min(all_values), max(all_values) + binwidth, binwidth)
+        bin_centers = (bins[1:] + bins[:-1]) / 2
 
         # Plot each histogram
         # plt.hist(all_angle_differences, bins=bins, alpha=1, linewidth=2, edgecolor='black', cumulative=True, density=True, histtype='step', label='All reconstructed events (current logic)')
 
         if oneht_twoht_angles:
-            plt.hist(oneht_twoht_angles, bins=bins, alpha=1, linewidth=2, edgecolor='blue', cumulative=True, density=True, histtype='step', label='1 hit 2 hit')
+            n_1ht2ht, bins, patches = plt.hist(oneht_twoht_angles, bins=bins, alpha=0.7, linewidth=2, edgecolor='blue', cumulative=True, density=True, histtype='step', label=f'1 hit 2 hit ({len(oneht_twoht_angles)} events)')
+            #plt.plot(bin_centers, n_1ht2ht, color='blue', alpha=0.6, linewidth=2)
+            #sns.kdeplot(oneht_twoht_angles, color='blue', alpha=0.6, linewidth=2, label=f'1 hit 2 hit ({len(oneht_twoht_angles)} events)')
+
+        if oneht_oneht_angles:
+            n_1ht1ht, bins, patches = plt.hist(oneht_oneht_angles, bins=bins, alpha=0.7, linewidth=2, edgecolor='orange', cumulative=True, density=True, histtype='step', label=f'1 hit 1 hit ({len(oneht_oneht_angles)} events)')
+            #plt.plot(bin_centers, n_1ht1ht, color='orange', alpha=0.6, linewidth=2)
+            #sns.kdeplot(oneht_oneht_angles, color='orange', alpha=0.6, linewidth=2, label=f'1 hit 1 hit ({len(oneht_oneht_angles)} events)')
 
         if twoht_twoht_angles:
-            plt.hist(twoht_twoht_angles, bins=bins, alpha=1, linewidth=2, edgecolor='red', cumulative=True, density=True, histtype='step', label='2 hit 2 hit')
-            
-        if revan_angles:
-            plt.hist(revan_angle_differences, bins=bins, alpha=1, linewidth=2, edgecolor='green', cumulative=True, density=True, histtype='step', label='All Revan reconstructed events')
+            n_2ht2ht, bins, patches = plt.hist(twoht_twoht_angles, bins=bins, alpha=0.7, linewidth=2, edgecolor='red', cumulative=True, density=True, histtype='step', label=f'2 hit 2 hit ({len(twoht_twoht_angles)} events)')
+            #plt.plot(bin_centers, n_2ht2ht, color='red', alpha=0.6, linewidth=2)
+            #sns.kdeplot(twoht_twoht_angles, color='red', alpha=0.6, linewidth=2, label=f'2 hit 2 hit ({len(twoht_twoht_angles)} events)')
 
-        plt.xlabel("Angle difference between reconstructed and true gamma-ray direction [degrees]")
-        plt.ylabel("Normalized # events")
-        plt.title("Gamma-Ray Reconstruction Accuracy")
-        plt.legend()
+        if revan_angles:
+            n_revan, bins, patches = plt.hist(revan_angles, bins=bins, alpha=0.7, linewidth=2, edgecolor='green', cumulative=True, density=True, histtype='step', label=f'All Revan reconstructed events ({len(revan_angles)} events)', linestyle = 'dashed', zorder = 3)
+            #plt.plot(bin_centers, n_revan, color='green', alpha=0.6, linewidth=2)
+            #sns.kdeplot(revan_angles, color='green', alpha=0.6, linewidth=2, label=f'Revan ({len(revan_angles)} events)', linestyle = 'dashed', zorder = 3)
+
+        plt.xlabel("Angle difference between reconstructed and true gamma-ray direction [degrees]", fontsize=12)
+        plt.ylabel("Number of events", fontsize=12)
+        plt.title("Gamma-Ray Reconstruction Accuracy", fontsize=12)
+        plt.legend(fontsize=10)
+        plt.grid(linestyle='--')
+        plt.tight_layout()
+        plt.minorticks_on()
+        plt.text(0,1, f'Total events: {len(all_values)}', fontsize=12, verticalalignment='top', bbox=dict(facecolor='white', alpha=1))
+        plt.show()
+
+    def GammaRayReconstructionScatterplot(self, all_angle_differences, revan_angles):
+        '''
+        Scatter plot of angle differences between reconstructed and true gamma-ray directions for current logic vs. Revan
+        --------------------------------------------------------------
+        Parameters:
+            all_angle_differences (list): List of angle differences (between reconstructed and actual) in degrees for current logic
+            revan_angles (list): List of angle differences for Revan reconstruction
+        Returns:
+            None (displays a scatter plot)
+        '''
+        plt.figure(figsize=(8, 6))
+        plt.scatter(all_angle_differences, revan_angles, color='blue', alpha=0.6)
+        plt.xlabel('Updated Reconstruction')
+        plt.ylabel("Revan Reconstruction")
+        plt.title("Gamma-Ray Reconstruction Accuracy: Current Logic vs. Revan")
         plt.grid(linestyle='--')
         plt.tight_layout()
         plt.show()
-    
+
     def PlotVertexHistogram(self, NumberOfVerticesPerEvent, inputfile):
         '''
         Plot histogram of the number of vertices per event
@@ -1183,6 +1288,7 @@ if __name__ == "__main__":
     parser.add_argument('--plot-distance-dist', action='store_true', help='Plot distance distribution of hits relative to virtual hit in the layer below vertex')
     parser.add_argument('--gr-hist', action='store_true', help='Plot histogram of angle differences between reconstructed and true gamma-ray directions')
     parser.add_argument('--revan', type=bool, default=False, help='Enter True to include Revan reconstructed events in the gamma-ray reconstruction histogram (requires Revan reconstruction to have already been run on the same input file)')
+    parser.add_argument('--gr-scatterplot', type=bool, default=False, help='Enter True to plot scatterplot of gamma-ray reconstruction angle difference for new reconstruction logic vs. Revan reconstruction')
     
     # Loading in the required geometry (AMEGO-X for this analysis, can change to desired geometry)
     GeometryName = "../Geometry/AMEGO_Midex/AmegoXBase.geo.setup"
@@ -1333,6 +1439,7 @@ if __name__ == "__main__":
 
     all_angle_differences = []
     oneht_twoht_angles = []
+    oneht_oneht_angles = []
     twoht_twoht_angles = []
 
     for vtx in all_vertices:
@@ -1344,6 +1451,8 @@ if __name__ == "__main__":
         if hasattr(vtx, "vertex_type"):
             if vtx.vertex_type == "type_1ht2ht":
                 oneht_twoht_angles.append(angle_deg)
+            if vtx.vertex_type == "type_1ht1ht":
+                oneht_oneht_angles.append(angle_deg)
             elif vtx.vertex_type == "type_2ht2ht":
                 twoht_twoht_angles.append(angle_deg)
 
@@ -1359,10 +1468,11 @@ if __name__ == "__main__":
         if args.revan is True:
             revan_angle_differences = np.loadtxt(f"{base_filename}_revan_angle_differences.txt") # load in the Revan angle differences from the text file
             revan_angle = revan_angle_differences.tolist() # convert to list for histogramming
-            EP.PlotGammaRayReconstructionHistogram(all_angle_differences, oneht_twoht_angles, twoht_twoht_angles, revan_angles=revan_angle) # histogramming with revan info
+            EP.PlotGammaRayReconstructionHistogram(all_angle_differences, oneht_twoht_angles, oneht_oneht_angles, twoht_twoht_angles, revan_angles=revan_angle) # histogramming with revan info
         else:
-            EP.PlotGammaRayReconstructionHistogram(all_angle_differences, oneht_twoht_angles, twoht_twoht_angles) # histogramming without revan info
-        
+            EP.PlotGammaRayReconstructionHistogram(all_angle_differences, oneht_twoht_angles, oneht_oneht_angles, twoht_twoht_angles) # histogramming without revan info
+            #print("not plotting histogram")
+
         print("\n--------- OVERALL RECONSTRUCTION PERFORMANCE ---------")
         print("Total # of reconstructed events:", len(all_vertices))
         print("Average reconstructed direction:", mean_dir)
@@ -1380,15 +1490,23 @@ if __name__ == "__main__":
         # -----------------------------
         if len(oneht_twoht_angles) > 0:
             oneht2htpercentile68 = np.percentile(oneht_twoht_angles, 68) 
-            print(f"68th percentile angle difference for 1 hit 2 hit events: {oneht2htpercentile68:.3f} degrees")
+            print(f"68th percentile angle difference for 1 hit 2 hit events: {oneht2htpercentile68:.3f} degrees, {len(oneht_twoht_angles)} events")
             np.save(f"{inputfile}_oneht_twoht_angles.npy", np.array(oneht_twoht_angles))
         else:
             oneht2htpercentile68 = None
             print("No 1 hit 2 hit events found; cannot compute 68th percentile.")
         # -----------------------------
+        if len(oneht_oneht_angles) > 0:
+            oneht1htpercentile68 = np.percentile(oneht_oneht_angles, 68)
+            print(f"68th percentile angle difference for 1 hit 1 hit events: {oneht1htpercentile68:.3f} degrees, {len(oneht_oneht_angles)} events")
+            np.save(f"{inputfile}_oneht_oneht_angles.npy", np.array(oneht_oneht_angles))
+        else:
+            oneht1htpercentile68 = None
+            print("No 1 hit 1 hit events found; cannot compute 68th percentile.")
+        # -----------------------------
         if len(twoht_twoht_angles) > 0:
             twoht2htpercentile68 = np.percentile(twoht_twoht_angles, 68)
-            print(f"68th percentile angle difference for 2 hit 2 hit events: {twoht2htpercentile68:.3f} degrees")
+            print(f"68th percentile angle difference for 2 hit 2 hit events: {twoht2htpercentile68:.3f} degrees, {len(twoht_twoht_angles)} events")
             np.save(f"{inputfile}_twoht_twoht_angles.npy", np.array(twoht_twoht_angles))
         else:
             twoht2htpercentile68 = None
@@ -1399,7 +1517,15 @@ if __name__ == "__main__":
             print(f"68th percentile angle difference for Revan reconstructed events: {revanpercentile68:.3f} degrees")
         elif args.revan is True:
             print("No Revan reconstructed events found in provided file. Cannot compute 68th percentile.")
-
+    
+    if args.gr_scatterplot:
+        if args.revan is True:
+            revan_angle_differences = np.loadtxt(f"{base_filename}_revan_angle_differences.txt") # load in the Revan angle differences from the text file
+            revan_angle = revan_angle_differences.tolist() # convert to list for scatterplotting
+            EP.GammaRayReconstructionScatterplot(all_angle_differences, revan_angles=revan_angle) # scatterplotting with revan info
+        else:
+            print("Revan reconstruction data not provided; cannot generate scatterplot comparing to Revan.")
+    
     # Write out the leftover azimuthal angles into the output file
     if event_id_list:
         with open(output_phi_filename, 'a') as f:
