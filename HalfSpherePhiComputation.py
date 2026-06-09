@@ -20,7 +20,7 @@ G = M.MGlobal()
 G.Initialize()
 
 # Load geometry
-GeometryName = "/Geometry/AMEGO_Midex/AmegoXBase.geo.setup"
+GeometryName = "../Geometry/AMEGO_Midex/AmegoXBase.geo.setup"
 Geometry = M.MGeometryRevan()
 if Geometry.ScanSetupFile(M.MString(GeometryName)):
     print("Geometry " + GeometryName + " loaded!")
