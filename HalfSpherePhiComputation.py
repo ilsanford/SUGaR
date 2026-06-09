@@ -3,7 +3,7 @@ import numpy as np
 import argparse
 import os
 import sys
-from VertexIDAndPlottingMODIFIER import VertexFinder
+from VertexIDAndPlottingNEW import VertexFinder
 
 # Command line arguments
 parser = argparse.ArgumentParser(description="Compute azimuthal angle phi in reference to RelativeX for all pair events")
