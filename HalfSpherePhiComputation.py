@@ -3,7 +3,7 @@ import numpy as np
 import argparse
 import os
 import sys
-from VertexIDAndPlottingNEW import VertexFinder
+from VertexIDAndPlottingMODIFIER import VertexFinder
 
 # Command line arguments
 parser = argparse.ArgumentParser(description="Compute azimuthal angle phi in reference to RelativeX for all pair events")
@@ -67,7 +67,7 @@ def ComputePhi_RelativeX(vtx, photon_dir, hit1, hit2):
     d1 /= np.linalg.norm(d1)
     d2 /= np.linalg.norm(d2)
 
-    # project d1 and d2 into transverse plane
+    # project d1 and d2
     d1_perp = d1 - np.dot(d1, k) * k
     d2_perp = d2 - np.dot(d2, k) * k
     if np.linalg.norm(d1_perp) == 0 or np.linalg.norm(d2_perp) == 0:
@@ -75,7 +75,7 @@ def ComputePhi_RelativeX(vtx, photon_dir, hit1, hit2):
     d1_perp /= np.linalg.norm(d1_perp)
     d2_perp /= np.linalg.norm(d2_perp)
 
-    # azimuthal angle of each track in transverse plane
+    # azimuthal angle of each track 
     phi1 = np.arctan2(np.dot(d1_perp, e2), np.dot(d1_perp, e_pol))
     phi2 = np.arctan2(np.dot(d2_perp, e2), np.dot(d2_perp, e_pol))
 
@@ -107,6 +107,7 @@ EvtaReader.Open(M.MString(sim_file))
 
 n_vertices = 0
 n_type1ht1ht = 0
+n_none_phi = 0
 
 while True:
     sim_event = SimReader.GetNextEvent()
@@ -178,4 +179,3 @@ print(f"Total events: {total_events}")
 print(f"Total vertices found: {n_vertices}")
 print(f"Removed type_1ht1ht: {n_type1ht1ht}")
 print(f"Good phi values: {len(phi_values)}")
-
