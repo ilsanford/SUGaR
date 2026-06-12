@@ -9,7 +9,7 @@ G = M.MGlobal()
 G.Initialize()
 
 # Load geometry
-GeometryName = "../../MEGAlib_Data/Geometry/AMEGO_Midex/AmegoXBase.geo.setup"
+GeometryName = "../Geometry/AMEGO_Midex/AmegoXBase.geo.setup"
 Geometry = M.MGeometryRevan()
 if Geometry.ScanSetupFile(M.MString(GeometryName)):
     print("Geometry " + GeometryName + " loaded!")
@@ -61,7 +61,7 @@ with open(outputfile, "w") as fout:
             if IA.GetProcess() != "PAIR":
                 continue
             
-            # Extracting the poistion of the pair conversion and its associated volume
+            # Extracting the position of the pair conversion and its associated volume
             pos = IA.GetPosition()            
             volume = Geometry.GetVolume(pos)
 
@@ -85,5 +85,3 @@ for mat, count in sorted(counts_in_material.items(), key=lambda x: -x[1]):
 
 print(f"Done. Events saved to {outputfile}")
 
-# move the output writing into first loop
-# make sure there is no double counting -> CsI -> first pair production - why is the modulation clean?
