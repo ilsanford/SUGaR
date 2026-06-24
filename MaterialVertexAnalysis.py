@@ -107,7 +107,9 @@ while True:
 
     # Compute phi
     for vtx in vertices:
-        hit1, hit2 = vtx.AllRESEs
+        hits = vtx.AllRESEs
+        hit1 = hits[0]
+        hit2 = hits[1]
         phi_val = vtx.ComputePhi(theta=0.0, phi=0.0, hit1=hit1, hit2=hit2, ref_direction="RelativeX")
         results[target_material]["event_ids"].append(eid)
         results[target_material]["phi"].append(phi_val)
