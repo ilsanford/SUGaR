@@ -7,6 +7,9 @@ import matplotlib.pyplot as plt
 def polarfit(x, A, phi0, N):
     return N / (2 * np.pi) * (1 - A * np.cos(2 * (x - phi0)))
 
+plt.rcParams["font.family"] = "serif"
+plt.rcParams["font.serif"] = ["Times New Roman", "Times", "DejaVu Serif", "serif"]
+
 '''
 MAIN FUNCTION
 '''
