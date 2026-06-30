@@ -1954,7 +1954,7 @@ if __name__ == "__main__":
         raise ValueError('Input file must be of type .sim or .sim.gz')
     # Reading each event and stopping if none left, rejecting "invalid" events (as identified in MEGAlib)
 
-    angle_output_file = open(f"{outputpath}{inputfile}_NewAngleDiffs.txt", "w")    
+    angle_output_file = open(f"{outputpath}NewAngleDiffs.txt", "w")    
 
     while True:
         RE = Reader.GetNextEvent()
