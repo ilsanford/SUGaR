@@ -1888,7 +1888,7 @@ if __name__ == "__main__":
     parser.add_argument('--revan', action='store_true', help='Include Revan reconstructed events in the gamma-ray reconstruction histogram (requires Revan reconstruction to have already been run on the same input file)')
     parser.add_argument('--gr-scatterplot', action='store_true', help='Plot scatterplot of gamma-ray reconstruction angle difference for new reconstruction logic vs. Revan reconstruction')
     parser.add_argument('--polarization', action='store_true', default=False, help='Pass this flag if doing polarization analysis, omit if not')
-    
+    parser.add_argument('--o', type=str, help='Enter the path for the output file for angle difference text file')
     # Loading in the required geometry (AMEGO-X for this analysis, can change to desired geometry)
     GeometryName = "../Geometry/AMEGO_Midex/AmegoXBase.geo.setup"
     Geometry = M.MGeometryRevan()
@@ -1903,6 +1903,7 @@ if __name__ == "__main__":
     inputfile = args.inputfile
     plot_event_number = args.plot_event_number
     NumberOfLayers = args.layers
+    outputpath = args.o
 
     # Read in events (note that MFileEventsEvta automatically applies noising -- essential for realistic results)
     Reader = M.MFileEventsEvta(Geometry)
@@ -1953,7 +1954,7 @@ if __name__ == "__main__":
         raise ValueError('Input file must be of type .sim or .sim.gz')
     # Reading each event and stopping if none left, rejecting "invalid" events (as identified in MEGAlib)
 
-    angle_output_file = open(f"{inputfile}_NewAngleDiffs.txt", "w")    
+    angle_output_file = open(f"{outputpath}{inputfile}_NewAngleDiffs.txt", "w")    
 
     while True:
         RE = Reader.GetNextEvent()
