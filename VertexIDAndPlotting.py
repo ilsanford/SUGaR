@@ -2,38 +2,43 @@
 This file is separated into standalone functions and classes:
     (a) Vertex class: defines properties of the vertex (position, ID, adjacent hits in the layer below, associated
                                                         gamma ray direction, and the azimuthal angle)
-    (b) Functions:
+    (b) GroupedHit class:
+
+    (c) Functions:
         i. Uses input theta and phi (MC info) to compute the initial gamma ray direction vector
         ii. Projects the initial gamma ray direction vector onto the next layer
         iii. Calculates and returns the distance from a hit to the projected/virtual point
         iv. Finds the two hits closest to the identified virtual hit
         v. Plots the distribution of the distances from the hit to the virtual point
         vi. Gets the hits in the layer below the identified vertex
-    (c) VertexFinder class: locates the vertex - refer to the MERTrack.cxx file for the process of vertex identification. Also
+        vii.
+        viii.
+        ix.
+        x.
+    (d) VertexFinder class: locates the vertex - refer to the MERTrack.cxx file for the process of vertex identification. Also
                             reconstructs the gamma-ray direction using the identified vertex and hits in the layer below. 
-    (d) EventPlotting class: contains structure to plot the MC hits, RESE hits, MC vertex/interaction point, and identified vertex
+    (e) EventPlotting class: contains structure to plot the MC hits, RESE hits, MC vertex/interaction point, and identified vertex
                             for a specified event
-    (e) MCInteraction class: structure to extract the MC interaction points for each event
+    (f) MCInteraction class: structure to extract the MC interaction points for each event
 '''
 
-'''
-IMPORTING NECESSARY LIBRARIES AND MODULES
-'''
+# ------------------------------
+# IMPORTING NECESSARY LIBRARIES AND MODULES
+
 import ROOT as M
 import gzip
 import matplotlib.pyplot as plt
-# from mpl_toolkits.mplot3d import Axes3D
-# import matplotlib.cm as cm 
 from matplotlib.lines import Line2D
 import argparse
 import numpy as np
 import os
 import gc
-import seaborn as sns
+# ------------------------------
 
-# setting font to times new roman
+# Setting graphing font to Times New Roman (not important, personal choice)
 plt.rcParams["font.family"] = "serif"
 plt.rcParams["font.serif"] = ["Times New Roman", "Times", "DejaVu Serif", "serif"]
+
 
 '''
 (a) VERTEX CLASS
@@ -124,7 +129,7 @@ class Vertex:
         init_dir = initial_vector_function(theta, phi)
 
         if ref_direction is None:
-            ref_direction = "RelativeX" # default to RelativeX if not specified
+            ref_direction = "RelativeX" # default to RelativeX if not specified -> change?
 
         # Project reference axis into photon frame
         refDir = ref_map[ref_direction]
@@ -145,6 +150,51 @@ class Vertex:
         
         # Wrap to [-pi, pi]
         return np.atan2(np.sin(phi), np.cos(phi))
+    
+    def ComputePhi_RelativeX(vtx, photon_dir, hit1, hit2):
+        k = np.asarray(photon_dir)
+        if np.linalg.norm(k) == 0:
+            return None
+        k /= np.linalg.norm(k)
+
+        x_hat = np.array([1.0, 0.0, 0.0]) # in detector frame
+        e_pol = np.cross(k, x_hat) # this gives the RelativeX direction defined in MEGAlib
+        e_pol /= np.linalg.norm(e_pol)
+
+        e2 = np.cross(k, e_pol)  # creates an orthonormal basis for a plane perpendicular to the photon direction
+        e2 /= np.linalg.norm(e2)
+
+        # hit positions
+        pos1 = np.array([hit1.GetPosition().X(),hit1.GetPosition().Y(),hit1.GetPosition().Z()])
+        pos2 = np.array([hit2.GetPosition().X(),hit2.GetPosition().Y(),hit2.GetPosition().Z()])
+        vpos = np.array([vtx.GetXPosition(),vtx.GetYPosition(),vtx.GetZPosition()])
+
+        # direction vectors for the electron/positron hits relative to the identified vertex location
+        d1 = pos1 - vpos
+        d2 = pos2 - vpos
+        if np.linalg.norm(d1) == 0 or np.linalg.norm(d2) == 0:
+            return None
+        d1 /= np.linalg.norm(d1)
+        d2 /= np.linalg.norm(d2)
+
+        # project d1 and d2
+        d1_perp = d1 - np.dot(d1, k) * k
+        d2_perp = d2 - np.dot(d2, k) * k
+        if np.linalg.norm(d1_perp) == 0 or np.linalg.norm(d2_perp) == 0:
+            return None
+        d1_perp /= np.linalg.norm(d1_perp)
+        d2_perp /= np.linalg.norm(d2_perp)
+
+        # azimuthal angle of each track 
+        phi1 = np.arctan2(np.dot(d1_perp, e2), np.dot(d1_perp, e_pol))
+        phi2 = np.arctan2(np.dot(d2_perp, e2), np.dot(d2_perp, e_pol))
+
+        # bisector
+        phi = (phi1 + phi2) / 2
+        if abs(phi1 - phi2) > np.pi: # redundant
+            phi += np.pi
+
+        return np.arctan2(np.sin(phi), np.cos(phi))
     
     def ComputeIncomingGammaDirection(self):
         '''
@@ -180,9 +230,49 @@ class Vertex:
 
         return gamma_dir
 
+
 '''
-(b) STANDALONE FUNCTIONS
+(b) GroupedHit CLASS
 '''
+# making this a class for now since it is technically a "fake" hit with its own properties
+class GroupedHit:
+    '''
+    New hit created by clustering other hits
+    Contains the same properties of an RESE
+    '''
+    class CVec: # "clustered vector"
+        '''
+        was struggling with how to create access to properties like an RESE. this was a solution I found (nesting a helper class) is there a better way?
+        '''
+        def __init__(self, pos_array):
+            self.posarr = pos_array
+        def X(self): return float(self.posarr[0])
+        def Y(self): return float(self.posarr[1])
+        def Z(self): return float(self.posarr[2])
+
+    def __init__(self, position, energy):
+        '''
+        Parameters:
+            position (array): [x, y, z] midpoint of the merged hits
+            energy (float): summed energy of the merged hits
+        '''
+        self._position = np.asarray(position, dtype=float)
+        self._energy   = float(energy)
+
+    def GetPosition(self):
+        return GroupedHit.CVec(self._position)
+
+    def GetEnergy(self):
+        return self._energy
+
+    def GetID(self):
+        return -1  # meaningless id for the fake hit since it doesn't have one -> again, can make more robust
+
+
+'''
+(c) STANDALONE FUNCTIONS
+'''
+# (i)
 def initial_vector_function(theta, phi):
     '''
     Computes the vector for the initial direction of the incoming gamma-ray using theta and phi (this is MC info)
@@ -207,6 +297,7 @@ def initial_vector_function(theta, phi):
 
     return init_dir
 
+# (ii)
 def project_to_layer(init_pos, init_dir, z_target):
     '''
     Projects a virtual point along a direction vector to a plane at z = z_target
@@ -224,6 +315,7 @@ def project_to_layer(init_pos, init_dir, z_target):
     projected_point = init_pos + t * init_dir
     return projected_point
 
+# (iii)
 def distance_to_virtual(position, virtual_point):
     '''
     Computes distance from a hit to a virtual projected point
@@ -239,6 +331,7 @@ def distance_to_virtual(position, virtual_point):
     distance = np.linalg.norm(position - virtual_point)
     return distance
 
+# (iv)
 def select_two_closest_hits(hits, projected_point):
     '''
     Finds the two hits closest to the projected virtual point within a given distance cutoff (currently set as 5cm)
@@ -267,6 +360,7 @@ def select_two_closest_hits(hits, projected_point):
 
     # Require at least two hits within cutoff
     if len(hits_with_dist) < 2:
+        #print('rejected event due to distance cutoff')
         return None, None, []
 
     # Sort by distance and select the two closest
@@ -276,6 +370,7 @@ def select_two_closest_hits(hits, projected_point):
 
     return hit1, hit2, filtered_hits
 
+# (v)
 def plot_distance_distribution(hits, projected_point, bins=50):
     '''
     Plots histogram of distances between each hit and the virtual point
@@ -310,7 +405,8 @@ def plot_distance_distribution(hits, projected_point, bins=50):
     plt.tight_layout()
     plt.show()
 
-def get_hits_in_layer_below(event_id, vertex_z, HTXPosition, HTYPosition, HTZPosition, layer_thickness=1.5):
+# (vi)
+def get_hits_in_layer_below(event_id, vertex_z, HTXPosition, HTYPosition, HTZPosition, interlayerdistance):
     '''
     Identifies all hits in the detector layer directly below the vertex.
     --------------------------------------------------------------
@@ -318,14 +414,14 @@ def get_hits_in_layer_below(event_id, vertex_z, HTXPosition, HTYPosition, HTZPos
         event_id (int): Event ID to filter hits by
         vertex_z (float): z-position of the vertex
         HTXPosition, HTYPosition, HTZPosition (list): HT position data (in same units as vertex)
-        layer_thickness (float): Vertical spacing between layers [cm]
-
+        interlayerdistance (float): spacing between layers of the tracker 
     Returns:
         list: List of 3D hit position arrays [x, y, z] in the layer below
     '''
 
     # Range of z values to look in (1 layer)
-    target_z = vertex_z - layer_thickness
+
+    target_z = vertex_z - interlayerdistance
     tolerance = 1e-6 # cm (only to handle floating point issues)
 
     hits_in_layer = []
@@ -340,22 +436,259 @@ def get_hits_in_layer_below(event_id, vertex_z, HTXPosition, HTYPosition, HTZPos
 
     return hits_in_layer
 
+# (vii)
+def clustering_hits_bydist(hits): # USING STRAIGHT UP DISTANCE COMPUTATION
+    '''
+    Take the two closest hits and merge them into one. If more than two hits remain after this,
+    merge the closest two. Continue until exactly two hits remain and use those for reconstruction.
+    The locations of the "fake" hits are determined by the midpoint of the clustered hits.
+    --------------------------------------------------------------
+    Parameters:
+        hits (list): List of hit objects (RESEs or clustered)
+
+    Returns:
+        list: Exactly two hits, or an empty list if the
+              input contains fewer than two hits.
+    '''
+    
+    if len(hits) < 2:
+        return [] # if there are less than two hits, return an empty list
+
+    current = list(hits) # copy the input list to make modifications without changing original data
+
+    while len(current) > 2: # perform whenever there are more than two hits found -- IF EXACTLY 2 LEAVE TO RECONSTRUCTION   
+        min_dist = float('inf') # keep track of smallest distance between any two hits, start at infinity so first cluster is always saved
+        index_i, index_j = -1, -1 # initialize indicies of closest pair found in this iteration
+
+        # Find the closest pair
+        for i in range(0, len(current)):
+            point_i = np.array([current[i].GetPosition().X(),
+                           current[i].GetPosition().Y(),
+                           current[i].GetPosition().Z()])
+            for j in range(i + 1, len(current)):
+                point_j = np.array([current[j].GetPosition().X(),
+                               current[j].GetPosition().Y(),
+                               current[j].GetPosition().Z()])
+                distance = np.linalg.norm(point_i - point_j)
+                if distance < min_dist:
+                    min_dist = distance
+                    index_i, index_j = i, j
+
+        hit_i = current[index_i]
+        hit_j = current[index_j]
+
+        point_i = np.array([hit_i.GetPosition().X(), hit_i.GetPosition().Y(), hit_i.GetPosition().Z()])
+        point_j = np.array([hit_j.GetPosition().X(), hit_j.GetPosition().Y(), hit_j.GetPosition().Z()])
+
+        combined = GroupedHit(
+            position=(point_i + point_j) / 2.0, 
+            energy=hit_i.GetEnergy() + hit_j.GetEnergy() # can i just add the energy?
+        )
+
+        # assign a new hit to the cluster
+        current = [h for k, h in enumerate(current) if k not in (index_i, index_j)]
+        current.append(combined)
+
+    return current # has length of 2
+
+# (viii)
+def clustering_hits_by_angle(hits, hit_in_previous_layer):
+    if len(hits) < 2:
+        #print("less than 2 hits found--CHECK")  
+        return []
+
+    current = list(hits)
+
+    max_angle = 30.0 # in degrees (best determined cutoff value)
+
+    while len(current) > 2:
+        min_angle = float('inf')
+        index_i, index_j = -1, -1
+        found_valid_pair = False
+
+        for i in range(len(current)):
+            point_i = np.array([
+                current[i].GetPosition().X(),
+                current[i].GetPosition().Y(),
+                current[i].GetPosition().Z()
+            ])
+            dir_i = point_i - hit_in_previous_layer
+            norm_i = np.linalg.norm(dir_i)
+            if norm_i == 0:
+                continue
+            dir_i /= norm_i
+
+            for j in range(i + 1, len(current)):
+                point_j = np.array([
+                    current[j].GetPosition().X(),
+                    current[j].GetPosition().Y(),
+                    current[j].GetPosition().Z()
+                ])
+                dir_j = point_j - hit_in_previous_layer
+                norm_j = np.linalg.norm(dir_j)
+                if norm_j == 0:
+                    continue
+                dir_j /= norm_j
+
+                cosine = np.clip(np.dot(dir_i, dir_j), -1.0, 1.0) 
+                angle = np.rad2deg(np.arccos(cosine))
+
+                # only consider valid pairs
+                if angle <= max_angle:
+                    if angle < min_angle:
+                        min_angle = angle
+                        index_i, index_j = i, j
+                        found_valid_pair = True
+
+        # no valid pairs left under threshold so stop clustering
+        if not found_valid_pair:
+            return [] # skip the event if it doesn't meet requirements
+
+        # merge best valid pair
+        hit_i = current[index_i]
+        hit_j = current[index_j]
+
+        point_i = np.array([
+            hit_i.GetPosition().X(),
+            hit_i.GetPosition().Y(),
+            hit_i.GetPosition().Z()
+        ])
+        point_j = np.array([
+            hit_j.GetPosition().X(),
+            hit_j.GetPosition().Y(),
+            hit_j.GetPosition().Z()
+        ])
+
+        combined = GroupedHit(
+            position=(point_i + point_j) / 2.0,
+            energy=hit_i.GetEnergy() + hit_j.GetEnergy()
+        )
+
+        current = [h for k, h in enumerate(current) if k not in (index_i, index_j)]
+        current.append(combined)
+
+    return current
+
+# (ix)
+# CAN ENTIRELY REMOVE NOW
 '''
-(c) VERTEXFINDER CLASS
+def cluster_by_distance(hits, distance_threshold=0.05):  # tune threshold to be approximately the pixel size
+    
+    # Step 1: merge hits that are likely from the same particle
+    # (adjacent pixel hits) based on spatial proximity
+    
+    current = list(hits)
+
+    while len(current) > 2:
+        min_dist = float('inf')
+        index_i, index_j = -1, -1
+
+        for i in range(0, len(current)):
+            point_i = np.array([current[i].GetPosition().X(),
+                                current[i].GetPosition().Y(),
+                                current[i].GetPosition().Z()])
+            for j in range(i + 1, len(current)):
+                point_j = np.array([current[j].GetPosition().X(),
+                                    current[j].GetPosition().Y(),
+                                    current[j].GetPosition().Z()])
+                dist = np.linalg.norm(point_i - point_j)
+                if dist < min_dist:
+                    min_dist = dist
+                    index_i, index_j = i, j
+
+        if min_dist > distance_threshold:
+            break  # no more hits are close enough to be the same particle, stop clustering
+
+        hit_i = current[index_i]
+        hit_j = current[index_j]
+        point_i = np.array([hit_i.GetPosition().X(), hit_i.GetPosition().Y(), hit_i.GetPosition().Z()])
+        point_j = np.array([hit_j.GetPosition().X(), hit_j.GetPosition().Y(), hit_j.GetPosition().Z()])
+
+        combined = GroupedHit(
+            position=(point_i + point_j) / 2.0,
+            energy=hit_i.GetEnergy() + hit_j.GetEnergy()
+        )
+        current = [h for k, h in enumerate(current) if k not in (index_i, index_j)]
+        current.append(combined)
+
+    return current
+'''
+# (x)
+def select_best_pair(hits, vertex_pos):
+    
+    # Step 2: from the clustered hits, select the two with the
+    # smallest opening angle as seen from the vertex
+    
+    if len(hits) < 2:
+        return None, None
+    if len(hits) == 2:
+        return hits[0], hits[1]
+
+    min_angle = float('inf')
+    best_i, best_j = -1, -1
+
+    for i in range(len(hits)):
+        point_i = np.array([hits[i].GetPosition().X(),
+                            hits[i].GetPosition().Y(),
+                            hits[i].GetPosition().Z()])
+        dir_i = point_i - vertex_pos
+        norm_i = np.linalg.norm(dir_i)
+        if norm_i == 0:
+            continue
+        dir_i /= norm_i
+
+        for j in range(i + 1, len(hits)):
+            point_j = np.array([hits[j].GetPosition().X(),
+                                hits[j].GetPosition().Y(),
+                                hits[j].GetPosition().Z()])
+            dir_j = point_j - vertex_pos
+            norm_j = np.linalg.norm(dir_j)
+            if norm_j == 0:
+                continue
+            dir_j /= norm_j
+
+            cosine = np.clip(np.dot(dir_i, dir_j), -1.0, 1.0)
+            angle = np.rad2deg(np.arccos(cosine))
+
+            if angle < min_angle:
+                min_angle = angle
+                best_i, best_j = i, j
+
+    if best_i == -1:
+        return None, None
+
+    return hits[best_i], hits[best_j]
+
+
+'''
+(d) VERTEXFINDER CLASS
 '''
 class VertexFinder:
-    def __init__(self, Geometry, SearchRange = 30, NumberOfLayers = 2): # Let the default NumberOfLayers be 2
+    def __init__(self, Geometry, SearchRange = 30, NumberOfLayers = 0): # Let the default NumberOfLayers be 0 (was originally 2)
 
         self.Geometry = Geometry
         self.SearchRange = SearchRange
         self.NumberOfLayers = NumberOfLayers
         self.DetectorList = [M.MDStrip2D] # AstroPix detectors only
-        self.two_hit_after_dead_material_counter = 0
-        self.two_hit_in_two_layers_after_dead_material_counter = 0
 
-    def IsInTracker(self, RESE):
+        # Derive interlayer distance from the first detector matching DetectorList
+        self.interlayer_distance = None
+        for i in range(Geometry.GetNDetectors()):
+            det = Geometry.GetDetectorAt(i)
+            if det.__class__ in self.DetectorList:
+                self.interlayer_distance = det.GetStructuralPitch().Z()
+                #print(self.interlayer_distance)
+                break
+
+        if self.interlayer_distance is None:
+            raise RuntimeError("No detector matching DetectorList found in geometry — cannot determine interlayer distance.")
+
+        self.two_hit_after_dead_material_counter = 0 # this line and one below only apply if running on a filtered file containing only dead material conversion hits
+        self.two_hit_in_two_layers_after_dead_material_counter = 0 
+
+    def IsInTracker(self, RESE): # can look at comparing this to the megalib implementation to get closer to
         '''
-        Determine if a RESE is part of the tracker
+        Determine if an RESE is part of the tracker
         ---------------------------------------------------------------
         Parameters:
             RESE (MRESE): The RESE to check
@@ -375,7 +708,7 @@ class VertexFinder:
 
         return False
     
-    def best_hit_pairing(self, A1, A2, B1, B2):
+    def BestHitPairing(self, A1, A2, B1, B2):
         '''
         Given two hits in the layer below the vertex (B1, B2) and two hits in the layer above (A1, A2), determine the best pairing
         ----------------------------------------------------------------
@@ -400,7 +733,7 @@ class VertexFinder:
             return (A1, B2),(A2, B1)
 
     # There is a lot of background that goes into the following function - see the code documentation for a description
-    def calculating_vertex_position(self, p1, v1, p2, v2):
+    def CalculatingVertexPosition(self, p1, v1, p2, v2):
         '''
         Given two tracks defined by points p1 and p2 and direction vectors v1 and v2, calculate the point of closest 
         approach between the two tracks
@@ -424,7 +757,9 @@ class VertexFinder:
         e = np.dot(v2, w0)
 
         denom = a*c - b*b
+        
         if abs(denom) < 1e-6:
+            #print("2ht 2ht tracks are parallel (or very close to)... cannot compute vertex position")
             return None  # if very close to zero they are parallel
 
         t = (b*e - c*d)/denom
@@ -435,7 +770,7 @@ class VertexFinder:
 
         return 0.5 * (pca1 + pca2)
 
-    def FindVertices(self, RE, theta, phi):
+    def FindVertices(self, RE, theta, phi, polarization):
         # Note that the basic pair event reconstruction follows the logic implemented in the Revan code. Additional logic has been added.
         '''
         Main method to find vertex candidates in an event
@@ -449,9 +784,16 @@ class VertexFinder:
             list: List of Vertex objects found in the event
         '''
 
-        # -------- REVAN-STYLE LOGIC --------- #
-        Vertices = []
+        # initialize counters to print debug statements
+        nRejectedNotOnlyHit       = 0
+        nRejectedHitAbove         = 0
+        nRejectedLayerRequirement = 0
+        nRejectedNo2HitLayer      = 0
+        nRejectedClustering       = 0
 
+        Vertices = []
+        LayerRequirement = 4 # number of layers with 2+ hits required after the vertex (used for "event quality" selection), revan sets a minimum of 4
+        
         # Filter RESEs to those in tracker with energy > 0
         RESEs = [RE.GetRESEAt(i) for i in range(RE.GetNRESEs())
             if self.IsInTracker(RE.GetRESEAt(i)) and RE.GetRESEAt(i).GetEnergy() > 0]
@@ -459,9 +801,11 @@ class VertexFinder:
         # Sorting by depth in the tracker: shallowest -> deepest (larger z-position value is shallower)
         RESEs.sort(key=lambda rese: rese.GetPosition().Z(), reverse=True)
 
-        vertex_created_for_event = False # determine whether or not a vertex was assigned to an event
+        vertex_created_for_event = False # flag to determine whether or not a vertex was assigned to an event
 
-        # for events that have a one hit two hit morphology, apply the subsequent logic
+        # -------------------------------
+        # FOR EVENTS WITH A 1HT 2HT MORPHOLOGY, apply the subsequent logic
+        # -------------------------------
         for candidate in RESEs:
             OnlyHitInLayer = True
             for rese in RESEs:
@@ -471,7 +815,8 @@ class VertexFinder:
                     OnlyHitInLayer = False # now this becomes false
                     break
             if not OnlyHitInLayer: # if there are multiple hits in the candidate layer, reject
-                continue 
+                nRejectedNotOnlyHit += 1 # increase the counter for the event
+                continue
 
             NBelow = [0] * self.SearchRange 
             NAbove = [0] * self.SearchRange
@@ -487,8 +832,9 @@ class VertexFinder:
             
             # Looking for the vertex below ("inverted V")
             if NAbove[1] != 0:
+                nRejectedHitAbove += 1
                 continue
-
+            
             StartIndex = 0
             StopIndex = 0
             LayersWithAtLeastTwoHitsBetweenStartAndStop = 0
@@ -498,29 +844,28 @@ class VertexFinder:
                     break
                 StopIndex = Distance
 
-                if StartIndex == 0 and NBelow[Distance] > 1 and NBelow[Distance+1] > 1:
+                if StartIndex == 0 and NBelow[Distance] > 1:
                     StartIndex = Distance
                     
                 if StartIndex != 0 and NBelow[Distance] >= 2:
                     LayersWithAtLeastTwoHitsBetweenStartAndStop += 1
-
+            
             for Distance in range(StopIndex, 2, -1):
                 if NBelow[Distance-1] >= 2 and NBelow[Distance-2] >= 2:
                     break
                 StopIndex = Distance
-
-            interlayerdistance = 1.5 #cm (change depending on detector geometry, this is for AMEGO-X)
-
-            if LayersWithAtLeastTwoHitsBetweenStartAndStop < self.NumberOfLayers:
+            
+            if LayersWithAtLeastTwoHitsBetweenStartAndStop < LayerRequirement:
+                nRejectedClustering += 1
                 continue
 
-            # Search following N layers for first layer with 2+ hits
+            # Search N layers after candidate for first layer with 2+ hits -- NEW
             selected_layer_hits = None
             selected_distance = None
 
-            SearchLayers = 5 # CHANGE THIS FOR DESIRED NUMBER OF LAYERS BELOW CANDIDATE BEFORE 2+ HITS REQUIREMENT IS ENFORCED (new logic)
+            SearchLayersFor2Hit = 5 # CHANGE THIS FOR DESIRED NUMBER OF LAYERS BELOW CANDIDATE BEFORE 2+ HITS REQUIREMENT IS ENFORCED (new logic)
 
-            for Distance in range(1, SearchLayers+1):
+            for Distance in range(1, SearchLayersFor2Hit+1):
                 layer_hits = [rese for rese in RESEs if self.Geometry.GetLayerDistance(candidate, rese) == -Distance] 
 
                 if len(layer_hits) >= 2:
@@ -530,52 +875,75 @@ class VertexFinder:
 
             if selected_layer_hits is None:
                 continue
-            
-            layers_with_2plus_hits = 0
-            for Distance in range(selected_distance, selected_distance+40): # look for 2+ hits in subsequent layers (new logic)
-                layer_hits = [rese for rese in RESEs if self.Geometry.GetLayerDistance(candidate, rese) == -Distance] 
-                if len(layer_hits) >= 2: # CAN MAKE THIS MORE RESTRICTIVE TO EXACTLY TWO HITS
-                    layers_with_2plus_hits += 1 
-            
-            if layers_with_2plus_hits < 4: # require at least 4 layers with 2+ hits after the initially identified layer with 2+ hits
-                continue ### LOOK AT THIS ... make sure this is actually at 5
 
-            # -------- END REVAN-STYLE LOGIC --------- #
+            # -------------------------------
+            # IF PERFORMING A POLARIZATION ANALYSIS
 
-            # Project along MC direction to selected layer
-            init_pos = np.array([candidate.GetPosition().X(),
-                candidate.GetPosition().Y(),
-                candidate.GetPosition().Z()])
+            if polarization == True:
+                # Project along MC direction to selected layer
+                init_pos = np.array([candidate.GetPosition().X(),
+                    candidate.GetPosition().Y(),
+                    candidate.GetPosition().Z()])
 
-            init_dir = initial_vector_function(theta, phi)
+                # Move to the identified layer below candidate vertex and project virtual point on that layer
+                #for i in self.DetectorList:
+                    #print(Geometry.GetDetector(i).GetStructuralPitch().Z())
+                # Detector = Geometry.GetDetector("AstroPix") # accessing the tracker strip AstroPix information - MAKE MORE UNIVERSAL? -> look into something like referencing the 2D Strip DetectorType (-1 I think)
+                VF = VertexFinder(self.Geometry, NumberOfLayers=self.NumberOfLayers)
+                interlayer_distance = VF.interlayer_distance 
+                z_target = candidate.GetPosition().Z() - selected_distance * interlayer_distance
 
-            # Move to the identified layer below candidate vertex and project virtual point on that layer
-            z_target = candidate.GetPosition().Z() - selected_distance * interlayerdistance
-            projected_point = project_to_layer(init_pos, init_dir, z_target)
+                init_dir = initial_vector_function(theta, phi) 
+                projected_point = project_to_layer(init_pos, init_dir, z_target)
+            else:
+                init_dir = None
+            # -------------------------------
+
 
             '''
             The parts below are selecting specific event morphologies and using their geometry to reconstruct
             the gamma-ray direction
             '''
-            # for events whose first hit is followed by a layer with 2+ hits
+
+            # ------------------------------
+            # FOR EVENTS WHOSE FIRST HIT IS FOLLOWED BY A LAYER WITH 2+ HITS
             if selected_distance == 1:
+        
                 # Choose best two hits in that layer
-                hit1, hit2, filtered_hits = select_two_closest_hits(selected_layer_hits, projected_point)
-            
-            # for events that have multiple single hits before two hits, assign hit one AND hit two as the hit in the layer below single hit
+                if init_dir is not None:
+                    # if using MC direction information, take two closest hits to the projected point
+                    hit1, hit2, filtered_hits = select_two_closest_hits(selected_layer_hits, projected_point)
+                elif init_dir is None:
+                    # if no MC information is used, cluster closest hits until two remain -> reconstruct using those
+                    #clustered = clustering_hits_bydist(selected_layer_hits)
+                    candidate_position = np.array([candidate.GetPosition().X(), candidate.GetPosition().Y(), candidate.GetPosition().Z()])
+                    clustered = clustering_hits_by_angle(selected_layer_hits, candidate_position)
+                    #clustered = cluster_by_distance(selected_layer_hits, 0.05)
+                    if len(clustered) >= 2:
+                        hit1, hit2 = select_best_pair(clustered, candidate_position)
+                        #hit1, hit2 = select_best_pair(clustered, candidate_position)
+                    else:
+                        hit1, hit2 = None, None           
+            # ------------------------------
+
+
+            # ------------------------------
+            # FOR EVENTS THAT HAVE MULTIPLE SINGLE HITS BEFORE TWO HITS
+            # assign hit one AND hit two as the hit in the layer below single hit
             if selected_distance > 1:
                 # Get hits in the layer immediately below the candidate
                 layer_hits_below = [rese for rese in RESEs if self.Geometry.GetLayerDistance(candidate, rese) == -selected_distance] # this is throwing out events
-
+                candidate_position = np.array([candidate.GetPosition().X(), candidate.GetPosition().Y(), candidate.GetPosition().Z()])
                 if len(layer_hits_below) >= 2:
-                    # Pick first two hits in that layer
-                    hit1 = layer_hits_below[0]
-                    hit2 = layer_hits_below[1]
+                    hit1, hit2 = layer_hits_below[0], layer_hits_below[1]
                 else:
                     hit1 = None
                     hit2 = None
+            # ------------------------------
+
 
             if hit1 is None or hit2 is None:
+                nRejectedNo2HitLayer += 1
                 continue
 
             # Declare vertex
@@ -597,10 +965,24 @@ class VertexFinder:
                                             hit2.GetPosition().Y(),
                                             hit2.GetPosition().Z()]) \
                                     - np.array([vtx.x, vtx.y, vtx.z])
+                    
+                    vtx.vertex_type = 'type_1ht2ht' # assigning a type to the event for histogramming purposes 
+                    vtx.electron_energy = hit1.GetEnergy()
+                    vtx.positron_energy = hit2.GetEnergy()
+
+                    electron_track /= np.linalg.norm(electron_track)
+                    positron_track /= np.linalg.norm(positron_track)
+                    vtx.electron_dir = electron_track / np.linalg.norm(electron_track)
+                    vtx.positron_dir = positron_track / np.linalg.norm(positron_track)
+
+                    gamma_dir = vtx.ComputeIncomingGammaDirection()
+                    vtx.gamma_dir = gamma_dir
+                    #print(f"Event {RE.GetEventID()}| type: {vtx.vertex_type} | vertex z: {vtx.GetZPosition()} | gamma dir: {gamma_dir}")
                 
-                # in order to reconstruct the gamma-ray for events that have single hits, reconstruct by drawing a line from the vertex to the single hit and treating that as both the electron and positron track
+                # in order to reconstruct the gamma-ray for events that have single hits, reconstruct by drawing a line
+                #        from the vertex to the single hit and treating that as both the electron and positron track
                 # for 1ht-1ht events, use the first two recorded hits to define gamma-ray direction
-                if selected_distance > 1 and len(RESEs) >= 2: # handles cases wehre there are multiple single hits before the two hits
+                if selected_distance > 1 and len(RESEs) >= 2: # handles cases where there are multiple single hits before the two hits
                     first_hit = RESEs[0] # first hit in the event
                     second_hit = RESEs[1] # second hit in the event
 
@@ -628,56 +1010,73 @@ class VertexFinder:
                     positron_track /= np.linalg.norm(positron_track)
                     gr_direction = -(electron_track + positron_track)
                     gr_direction /= np.linalg.norm(gr_direction)
-
-                    #print(f"Event {RE.GetEventID()}: Gamma-ray direction: {gr_direction}, Angle between: {np.arccos(np.clip(np.dot(gr_direction, init_dir), -1.0, 1.0)) * 180/np.pi:.2f} degrees")
-            
-
-                # Normalize directions
-                vtx.electron_dir = electron_track / np.linalg.norm(electron_track)
-                vtx.positron_dir = positron_track / np.linalg.norm(positron_track)
-
-                if selected_distance == 1:
-                    vtx.vertex_type = 'type_1ht2ht' # assigning a type to the event for histogramming purposes 
-                    vtx.electron_energy = hit1.GetEnergy()
-                    vtx.positron_energy = hit2.GetEnergy()
-                if selected_distance > 1:
                     vtx.vertex_type = 'type_1ht1ht' 
+                    vtx.electron_dir = electron_track
+                    vtx.positron_dir = positron_track
                     vtx.electron_energy = first_hit.GetEnergy()
-                    vtx.positron_energy = first_hit.GetEnergy()
-                
-                vtx.gamma_dir = vtx.ComputeIncomingGammaDirection()
-                true_dir = initial_vector_function(theta, phi)
+                    vtx.positron_energy = second_hit.GetEnergy()
+                    gamma_dir = vtx.ComputeIncomingGammaDirection()
+                    vtx.gamma_dir = gamma_dir
+
+                    #print(f"Event {RE.GetEventID()}| type: {vtx.vertex_type} | vertex z: {vtx.GetZPosition()} | gamma dir: {gr_direction}")
+                #print(f"Event {RE.GetEventID()}: Angle between: {np.arccos(np.clip(np.dot(gr_direction, init_dir), -1.0, 1.0)) * 180/np.pi:.2f} degrees, event type:{vertex_type}")
+                true_dir = initial_vector_function(theta, phi) # THIS CAN ONLY BE DONE IF POLARIZATION FLAG SET TO TRUE
+
             
         '''
         SOME NEW LOGIC STARTS HERE
         '''
         # New logic for events that did not have a vertex assigned (2ht 2ht morphology)
+
         if not vertex_created_for_event:
             
-            # Identify the topmost layer in the event
-            #shallowest_z = max(rese.GetPosition().Z() for rese in RESEs)
+            # Identify the hits in the topmost layer in the event
             top_hit = RESEs[0]
-
             hits_in_first_layer = [rese for rese in RESEs if self.Geometry.GetLayerDistance(rese, top_hit) == 0] # in same layer as the shallowest hit
 
             if len(hits_in_first_layer) == 2: # restricting to only allow exactly two hits in the top layer
 
-                self.two_hit_after_dead_material_counter += 1
+                self.two_hit_after_dead_material_counter += 1 # ONLY FOR DEAD MATERIAL ANALYSIS
 
                 hit1, hit2 = hits_in_first_layer
 
                 # Now look for hits in the layer immediately below
-                hits_in_layer_below = [rese for rese in RESEs
-                    if self.Geometry.GetLayerDistance(hit1, rese) == -1]
+                hits_in_layer_below = [rese for rese in RESEs if self.Geometry.GetLayerDistance(hit1, rese) == -1]
 
-                # For now also require exactly two hits in the layer below
+                # for now also I am also requiring exactly two hits in the layer below -- CAN CHANGE NOW USING CLUSTERING FOR SECOND LAYER HITS
                 if len(hits_in_layer_below) == 2:
+                    
+                    # mimicking the logic applied to the 1ht events
+                    NBelow = [0] * self.SearchRange
+                    for rese in RESEs:
+                        Distance = self.Geometry.GetLayerDistance(top_hit, rese)
+                        if Distance < 0 and abs(Distance) < self.SearchRange:
+                            NBelow[abs(Distance)] += 1
 
-                    self.two_hit_in_two_layers_after_dead_material_counter += 1
+                    StartIndex = 0
+                    StopIndex = 0
+                    LayersWithAtLeastTwoHitsBetweenStartAndStop = 0
+
+                    for Distance in range(1, self.SearchRange-1):
+                        if NBelow[Distance] == 0 and NBelow[Distance+1] == 0:
+                            break
+                        StopIndex = Distance
+
+                        if StartIndex == 0 and NBelow[Distance] > 1:
+                            StartIndex = Distance
+
+                        if StartIndex != 0 and NBelow[Distance] >= 2:
+                            LayersWithAtLeastTwoHitsBetweenStartAndStop += 1
+
+                    if LayersWithAtLeastTwoHitsBetweenStartAndStop < LayerRequirement:
+                        return Vertices  # skip event
+
+                    self.two_hit_in_two_layers_after_dead_material_counter += 1 # ONLY FOR DEAD MATERIAL ANALYSIS
 
                     hit1lay1, hit2lay1 = hits_in_first_layer
                     hit1lay2, hit2lay2 = hits_in_layer_below
 
+                    # getting positions of all the hits (A is first layer, B is second layer)
                     A1 = np.array([hit1lay1.GetPosition().X(),
                         hit1lay1.GetPosition().Y(),
                         hit1lay1.GetPosition().Z()])
@@ -695,7 +1094,7 @@ class VertexFinder:
                         hit2lay2.GetPosition().Z()])
 
                     # Choose best hit pairing
-                    (track1, track2) = self.best_hit_pairing(A1, A2, B1, B2)
+                    (track1, track2) = self.BestHitPairing(A1, A2, B1, B2)
 
                     (p1, q1), (p2, q2) = track1, track2 # p = point in layer 1, q = point in layer 2
 
@@ -703,7 +1102,7 @@ class VertexFinder:
                     v2 = q2-p2
 
                     # Assigning the vertex a 3D position
-                    vertex_point = self.calculating_vertex_position(p1, v1, p2, v2)
+                    vertex_point = self.CalculatingVertexPosition(p1, v1, p2, v2)
                     
                     if vertex_point is None:
                         return Vertices # skip
@@ -728,11 +1127,10 @@ class VertexFinder:
 
                     true_dir = initial_vector_function(theta, phi)
 
-                    #print(f"Event {RE.GetEventID()}: Reconstructed gamma direction: {gamma_dir}, True gamma direction: {true_dir}, Angle between: {np.arccos(np.clip(np.dot(gamma_dir, true_dir), -1.0, 1.0)) * 180/np.pi:.2f} degrees")
                     Vertices.append(vtx)
 
                     vtx.vertex_type = 'type_2ht2ht' # assigning a type to the event for histogramming purposes
-
+                
         '''
         ENDS HERE
         '''
@@ -743,12 +1141,13 @@ class VertexFinder:
         '''
         #print("Number of events with two hits after dead material conversion:", self.two_hit_after_dead_material_counter)
         #print("Number of events with two hits in two layers after dead material conversion:", self.two_hit_in_two_layers_after_dead_material_counter)
-        
+        #print(f"Event {RE.GetEventID()}: event type: {vertex_type}")
+
         return Vertices
 
     def TopVertex(self, vertex_list):
         '''
-        Select the top-most vertex (minimum z value) from a list of vertex candidates
+        Select the top-most vertex (maximum z value) from a list of vertex candidates
         ---------------------------------------------------------------
         Parameters:
             vertex_list (list): List of Vertex objects
@@ -757,10 +1156,11 @@ class VertexFinder:
             Vertex: The vertex with the highest Z position
         '''
 
-        return min(vertex_list, key=lambda v: v.GetZPosition())        
+        return max(vertex_list, key=lambda v: v.GetZPosition())        
+
 
 '''
-(d) EVENTPLOTTING CLASS
+(e) EVENTPLOTTING CLASS
 '''
 class EventPlotting:
     '''
@@ -888,11 +1288,11 @@ class EventPlotting:
         Reader.Open(M.MString(self.inputfile))
 
         Clusterizer = M.MERHitClusterizer()
-        Clusterizer.SetParameters(0,0,0,0,0,0,0,0,True) # Default clustering parameters are (1,-1)...CURRENT INPUT STOPS CLUSTERING
+        #Clusterizer.SetParameters(0,0,0,0,0,0,0,0,True) # Default clustering parameters are (1,-1)...CURRENT INPUT STOPS CLUSTERING
+        Clusterizer.SetParameters(-1, 1)
 
         RESEData = {} 
         EventCount = 0
-
         while True:
             Event = Reader.GetNextEvent()
             if not Event or not Event.IsValid():
@@ -977,7 +1377,6 @@ class EventPlotting:
             ax.scatter(PHTX[EventID], PHTY[EventID], PHTZ[EventID], c='orange', marker='^', s=40, alpha=0.6, label='Positron HT')
 
         # Plot all RESE events in red with different markers by RESE type
-        
         if EventID in RESEHits and RESEHits[EventID]:
             for x, y, z, marker, label in RESEHits[EventID]:
                 ax.scatter(x, y, z, c='red', marker=marker, alpha=0.4, s=40)
@@ -1021,16 +1420,77 @@ class EventPlotting:
         plt.show()
     
     def PlotGammaRayReconstructionHistogram(self, all_angle_differences, oneht_twoht_angles=None, oneht_oneht_angles=None, twoht_twoht_angles=None, revan_angles=None): # , revan_angle_differencess
-        '''
-        Plot histogram of angle differences between reconstructed and true gamma-ray directions
-        --------------------------------------------------------------
-        Parameters:
-            angle_differences (list): List of angle differences (between reconstructed and actual) in degrees
-            inputfile (str): filename
+        plt.rcParams['xtick.labelsize'] = 12
+        plt.rcParams['ytick.labelsize'] = 12
+        #Plot histogram of angle differences between reconstructed and true gamma-ray directions
+        #--------------------------------------------------------------
+        #Parameters:
+        #    angle_differences (list): List of angle differences (between reconstructed and actual) in degrees
+        #    inputfile (str): filename
         
-        Returns:
-            None (displays a histogram plot)
-        '''
+        #Returns:
+        #    None (displays a histogram plot)
+        
+
+        all_values = []
+        if oneht_twoht_angles:
+            all_values += oneht_twoht_angles
+        if oneht_oneht_angles:
+            all_values += oneht_oneht_angles
+        if twoht_twoht_angles:
+            all_values += twoht_twoht_angles
+
+        binwidth = 3
+        bins = np.arange(min(all_values), max(all_values) + binwidth, binwidth)
+        bin_centers = (bins[1:] + bins[:-1]) / 2
+
+        plt.figure(figsize=(4.5,3))
+        # 1 hit 2 hit
+        if oneht_twoht_angles:
+            counts, _ = np.histogram(oneht_twoht_angles, bins=bins)
+            plt.plot(bin_centers, counts, color='orange', alpha=0.7, linewidth=2, linestyle='dashdot', label=f'1 hit 2 hit ({len(oneht_twoht_angles)} events)')
+
+        # 1 hit 1 hit
+        if oneht_oneht_angles:
+            counts, _ = np.histogram(oneht_oneht_angles, bins=bins)
+            plt.plot(bin_centers, counts, color='forestgreen', alpha=0.7, linewidth=2, linestyle='dashed', label=f'1 hit 1 hit ({len(oneht_oneht_angles)} events)')
+
+        # 2 hit 2 hit
+        if twoht_twoht_angles:
+            counts, _ = np.histogram(twoht_twoht_angles, bins=bins)
+            plt.plot(bin_centers, counts, color='red', alpha=0.7, linewidth=2, linestyle='dotted', label=f'2 hit 2 hit ({len(twoht_twoht_angles)} events)')
+
+        if all_values:
+            counts, _ = np.histogram(all_values, bins=bins)
+            plt.plot(bin_centers, counts, color='black', alpha=0.7, linewidth=2, label=f'New ({len(all_values)} total events)')
+        # Old method (Revan)
+        if revan_angles:
+            counts, _ = np.histogram(revan_angles, bins=bins)
+            plt.plot(bin_centers, counts, color='darkcyan', alpha=0.7, linewidth=2, zorder=3, label=f'Old ({len(revan_angles)} total events)')
+
+        plt.xlabel(r"Angle between reconstructed and true direction [${}^\circ$]", fontsize=12)
+        plt.ylabel("Number of events", fontsize=12)
+        plt.title("Gamma-ray Reconstruction Accuracy", fontsize=12)
+        plt.legend(fontsize=10)
+        plt.grid(linestyle='--')
+        plt.tight_layout()
+        plt.minorticks_on()
+        #plt.text(0,1, f'New method total events: {len(all_values)}', fontsize=12, verticalalignment='top', bbox=dict(facecolor='white', alpha=1))
+        plt.savefig('reconstruction_histogram.png', transparent=True, bbox_inches="tight", dpi=400)
+        plt.show()
+
+    '''
+    def PlotGammaRayReconstructionHistogram(self, all_angle_differences, oneht_twoht_angles=None, oneht_oneht_angles=None, twoht_twoht_angles=None, revan_angles=None): # , revan_angle_differencess
+    
+        #Plot histogram of angle differences between reconstructed and true gamma-ray directions
+        #--------------------------------------------------------------
+        #Parameters:
+        #    angle_differences (list): List of angle differences (between reconstructed and actual) in degrees
+        #    inputfile (str): filename
+        
+        #Returns:
+        #    None (displays a histogram plot)
+        
 
         all_values = []
         if oneht_twoht_angles:
@@ -1050,32 +1510,168 @@ class EventPlotting:
         if oneht_twoht_angles:
             n_1ht2ht, bins, patches = plt.hist(oneht_twoht_angles, bins=bins, alpha=0.7, linewidth=2, edgecolor='blue', cumulative=True, density=True, histtype='step', label=f'1 hit 2 hit ({len(oneht_twoht_angles)} events)')
             #plt.plot(bin_centers, n_1ht2ht, color='blue', alpha=0.6, linewidth=2)
-            #sns.kdeplot(oneht_twoht_angles, color='blue', alpha=0.6, linewidth=2, label=f'1 hit 2 hit ({len(oneht_twoht_angles)} events)')
 
         if oneht_oneht_angles:
             n_1ht1ht, bins, patches = plt.hist(oneht_oneht_angles, bins=bins, alpha=0.7, linewidth=2, edgecolor='orange', cumulative=True, density=True, histtype='step', label=f'1 hit 1 hit ({len(oneht_oneht_angles)} events)')
             #plt.plot(bin_centers, n_1ht1ht, color='orange', alpha=0.6, linewidth=2)
-            #sns.kdeplot(oneht_oneht_angles, color='orange', alpha=0.6, linewidth=2, label=f'1 hit 1 hit ({len(oneht_oneht_angles)} events)')
 
         if twoht_twoht_angles:
             n_2ht2ht, bins, patches = plt.hist(twoht_twoht_angles, bins=bins, alpha=0.7, linewidth=2, edgecolor='red', cumulative=True, density=True, histtype='step', label=f'2 hit 2 hit ({len(twoht_twoht_angles)} events)')
             #plt.plot(bin_centers, n_2ht2ht, color='red', alpha=0.6, linewidth=2)
-            #sns.kdeplot(twoht_twoht_angles, color='red', alpha=0.6, linewidth=2, label=f'2 hit 2 hit ({len(twoht_twoht_angles)} events)')
 
         if revan_angles:
-            n_revan, bins, patches = plt.hist(revan_angles, bins=bins, alpha=0.7, linewidth=2, edgecolor='green', cumulative=True, density=True, histtype='step', label=f'All Revan reconstructed events ({len(revan_angles)} events)', linestyle = 'dashed', zorder = 3)
+            n_revan, bins, patches = plt.hist(revan_angles, bins=bins, alpha=0.7, linewidth=2, edgecolor='green', cumulative=True, density=True, histtype='step', label=f'Old method ({len(revan_angles)} total events)', linestyle = 'dashed', zorder = 3)
             #plt.plot(bin_centers, n_revan, color='green', alpha=0.6, linewidth=2)
-            #sns.kdeplot(revan_angles, color='green', alpha=0.6, linewidth=2, label=f'Revan ({len(revan_angles)} events)', linestyle = 'dashed', zorder = 3)
 
-        plt.xlabel("Angle difference between reconstructed and true gamma-ray direction [degrees]", fontsize=12)
-        plt.ylabel("Number of events", fontsize=12)
+        plt.xlabel(r"Difference between reconstructed and true $\gamma$-ray direction [${}^\circ$]", fontsize=12)
+        plt.ylabel("Normalized number of events", fontsize=12)
         plt.title("Gamma-Ray Reconstruction Accuracy", fontsize=12)
         plt.legend(fontsize=10)
         plt.grid(linestyle='--')
         plt.tight_layout()
         plt.minorticks_on()
-        plt.text(0,1, f'Total events: {len(all_values)}', fontsize=12, verticalalignment='top', bbox=dict(facecolor='white', alpha=1))
+        plt.text(0,1, f'New method total events: {len(all_values)}', fontsize=12, verticalalignment='top', bbox=dict(facecolor='white', alpha=1))
         plt.show()
+    '''
+    '''
+    # USE THE FOLLOWING FOR TOTAL LINE AND SEPARATED HT BY HT RECONSTRUCTION
+    def PlotGammaRayReconstructionHistogram(
+        self,
+        all_angle_differences,
+        oneht_twoht_angles=None,
+        oneht_oneht_angles=None,
+        twoht_twoht_angles=None,
+        revan_angles=None
+    ):
+
+        import numpy as np
+        import matplotlib.pyplot as plt
+
+        # -----------------------------
+        # Combine all event types
+        # -----------------------------
+        all_values = []
+
+        if oneht_twoht_angles:
+            all_values += oneht_twoht_angles
+
+        if oneht_oneht_angles:
+            all_values += oneht_oneht_angles
+
+        if twoht_twoht_angles:
+            all_values += twoht_twoht_angles
+
+        total_events = len(all_values)
+
+        # -----------------------------
+        # Common binning
+        # -----------------------------
+        binwidth = 1
+        bins = np.arange(min(all_values), max(all_values) + binwidth, binwidth)
+
+        # -----------------------------
+        # TOTAL histogram
+        # -----------------------------
+        total_weights = np.ones(len(all_values)) / total_events
+
+        plt.hist(
+            all_values,
+            bins=bins,
+            weights=total_weights,
+            histtype='step',
+            linewidth=2,
+            color='black',
+            cumulative=True,
+            label=f'New ({total_events} total events)',
+            zorder=5
+        )
+
+        # -----------------------------
+        # 1 hit 2 hit
+        # -----------------------------
+        if oneht_twoht_angles:
+
+            weights_1ht2ht = np.ones(len(oneht_twoht_angles)) / total_events
+
+            plt.hist(
+                oneht_twoht_angles,
+                bins=bins,
+                weights=weights_1ht2ht,
+                histtype='step',
+                linewidth=2,
+                color='blue',
+                cumulative=True,
+                label=f'1 hit 2 hit ({len(oneht_twoht_angles)} events)'
+            )
+
+        # -----------------------------
+        # 1 hit 1 hit
+        # -----------------------------
+        if oneht_oneht_angles:
+
+            weights_1ht1ht = np.ones(len(oneht_oneht_angles)) / total_events
+
+            plt.hist(
+                oneht_oneht_angles,
+                bins=bins,
+                weights=weights_1ht1ht,
+                histtype='step',
+                linewidth=2,
+                color='orange',
+                cumulative=True,
+                label=f'1 hit 1 hit ({len(oneht_oneht_angles)} events)'
+            )
+
+        # -----------------------------
+        # 2 hit 2 hit
+        # -----------------------------
+        if twoht_twoht_angles:
+
+            weights_2ht2ht = np.ones(len(twoht_twoht_angles)) / total_events
+
+            plt.hist(
+                twoht_twoht_angles,
+                bins=bins,
+                weights=weights_2ht2ht,
+                histtype='step',
+                linewidth=2,
+                color='red',
+                cumulative=True,
+                label=f'2 hit 2 hit ({len(twoht_twoht_angles)} events)'
+            )
+
+        # -----------------------------
+        # Revan comparison
+        # -----------------------------
+        if revan_angles:
+
+            weights_revan = np.ones(len(revan_angles)) / len(revan_angles)
+
+            plt.hist(
+                revan_angles,
+                bins=bins,
+                weights=weights_revan,
+                histtype='step',
+                linewidth=2,
+                color='green',
+                linestyle='dashed',
+                cumulative=True,
+                label=f'Old ({len(revan_angles)} total events)',
+                zorder=3
+            )
+
+        plt.xlabel(r"Difference between reconstructed and true $\gamma$-ray direction [${}^\circ$]")
+        plt.ylabel("Cumulative fraction of events")
+        plt.title("Gamma-Ray Reconstruction Accuracy")
+
+        plt.grid(linestyle='--')
+        plt.minorticks_on()
+        plt.legend()
+        plt.tight_layout()
+
+        plt.show()
+    '''
+    
 
     def GammaRayReconstructionScatterplot(self, all_angle_differences, revan_angles):
         '''
@@ -1118,8 +1714,9 @@ class EventPlotting:
         plt.savefig(f"{inputfile}_VerticesHistogram_{self.NumberOfLayers}Layers.png", dpi=300)
         plt.show()
 
+
 '''
-(e) MCINTERACTION CLASS
+(f) MCINTERACTION CLASS
 '''
 class MCInteraction: # does not NEED to be a class -> this is mostly just for organizational purposes
     def GetMCInteractionPoints(inputfile):
@@ -1263,6 +1860,7 @@ class MCInteraction: # does not NEED to be a class -> this is mostly just for or
         plt.tight_layout()
         plt.show()
 
+
 '''
 MAIN FUNCTION FOR EXECUTION IN TERMINAL
 '''
@@ -1287,8 +1885,9 @@ if __name__ == "__main__":
     parser.add_argument('--phi', type=float, default=0.0, help='Azimuthal angle phi (in degrees) of the incoming gamma-ray (default: 0 degrees)')
     parser.add_argument('--plot-distance-dist', action='store_true', help='Plot distance distribution of hits relative to virtual hit in the layer below vertex')
     parser.add_argument('--gr-hist', action='store_true', help='Plot histogram of angle differences between reconstructed and true gamma-ray directions')
-    parser.add_argument('--revan', type=bool, default=False, help='Enter True to include Revan reconstructed events in the gamma-ray reconstruction histogram (requires Revan reconstruction to have already been run on the same input file)')
-    parser.add_argument('--gr-scatterplot', type=bool, default=False, help='Enter True to plot scatterplot of gamma-ray reconstruction angle difference for new reconstruction logic vs. Revan reconstruction')
+    parser.add_argument('--revan', action='store_true', help='Include Revan reconstructed events in the gamma-ray reconstruction histogram (requires Revan reconstruction to have already been run on the same input file)')
+    parser.add_argument('--gr-scatterplot', action='store_true', help='Plot scatterplot of gamma-ray reconstruction angle difference for new reconstruction logic vs. Revan reconstruction')
+    parser.add_argument('--polarization', action='store_true', default=False, help='Pass this flag if doing polarization analysis, omit if not')
     
     # Loading in the required geometry (AMEGO-X for this analysis, can change to desired geometry)
     GeometryName = "../Geometry/AMEGO_Midex/AmegoXBase.geo.setup"
@@ -1305,7 +1904,7 @@ if __name__ == "__main__":
     plot_event_number = args.plot_event_number
     NumberOfLayers = args.layers
 
-    # Read in events (note that MFileEventsEvta automatically applies noising)
+    # Read in events (note that MFileEventsEvta automatically applies noising -- essential for realistic results)
     Reader = M.MFileEventsEvta(Geometry)
     Reader.Open(M.MString(inputfile))
 
@@ -1315,8 +1914,9 @@ if __name__ == "__main__":
     # Cluster the events
     Clusterizer = M.MERHitClusterizer()
     Clusterizer.SetGeometry(Geometry)
-    Clusterizer.SetParameters(0,0,0,0,0,0,0,0,True) # can change back to default if needed
-    Clusterizer.PreAnalysis()    
+    Clusterizer.SetParameters(0,0,0,0,0,0,0,0,True) # turns clustering off
+    #Clusterizer.SetParameters(-1, 1) -> turns default clustering on
+    Clusterizer.PreAnalysis() 
 
     # Initialize lists and dicts
     EventCount = 0
@@ -1331,7 +1931,7 @@ if __name__ == "__main__":
 
     # Setting up the structure to write out events
     block_size = 10000 # Write out events in blocks of 10,000
-    output_phi_filename = f"{inputfile}_PhiValues.txt"
+    output_phi_filename = f"{inputfile}_60degCUTOFFPhiValues.txt"
 
     # Remove output file if it already exists
     if os.path.exists(output_phi_filename):
@@ -1352,6 +1952,9 @@ if __name__ == "__main__":
     else:
         raise ValueError('Input file must be of type .sim or .sim.gz')
     # Reading each event and stopping if none left, rejecting "invalid" events (as identified in MEGAlib)
+
+    angle_output_file = open(f"{inputfile}_NewAngleDiffs.txt", "w")    
+
     while True:
         RE = Reader.GetNextEvent()
         M.SetOwnership(RE, True) # necessary to avoid memory leaks
@@ -1360,7 +1963,7 @@ if __name__ == "__main__":
             print("No more events.")
             break
         if not RE.IsValid():
-            print(f"Skipping invalid event at count {EventCount}.") # this seems to correspond to an energy deposit of 0 keV
+            #print(f"Skipping invalid event at count {EventCount}.") # this seems to correspond to an energy deposit of 0 keV
             continue
 
         EventNumberToEventID[EventCount] = RE.GetEventID()
@@ -1372,28 +1975,74 @@ if __name__ == "__main__":
         ClusteredRE = REI.GetInitialRawEvent()
         M.SetOwnership(ClusteredRE, True)
 
+        #Detector = Geometry.GetDetector("AstroPix") # accessing the tracker strip AstroPix information - MAKE MORE UNIVERSAL? -> look into something like 
+        VF = VertexFinder(Geometry, NumberOfLayers=NumberOfLayers)
+        interlayer_distance = VF.interlayer_distance
+
         # Getting the vertices and assigning each to its corresponding event ID -> VertexDict
-        Vertices = VF.FindVertices(ClusteredRE, theta=args.theta, phi=args.phi)
+        Vertices = VF.FindVertices(ClusteredRE, theta=args.theta, phi=args.phi, polarization=args.polarization)
         VertexDict[RE.GetEventID()] = Vertices 
-        all_vertices.extend(Vertices)
 
         if Vertices:
             top_vertex = VF.TopVertex(Vertices)
             vertex_z = top_vertex.GetPosition()[2]
+            if top_vertex.gamma_dir is None:
+                print(f"WARNING: EID {RE.GetEventID()} has None gamma_dir")
+                NumberOfVerticesPerEvent.append(len(Vertices))
+                if len(Vertices) > 0:
+                    PairsFound += 1
+                EventCount += 1
+                continue
 
-            hits_below = get_hits_in_layer_below(RE.GetEventID(), vertex_z, HTX, HTY, HTZ)
+            # Reconstructed off-axis angle: angle between the reconstructed gamma-ray direction and the instrument's z-axis
+            u_rec = top_vertex.gamma_dir / np.linalg.norm(top_vertex.gamma_dir)
+            reco_offaxis_angle = np.degrees(np.arccos(np.clip(u_rec[2], -1.0, 1.0)))
+
+            # Reject events with a reconstructed off-axis angle greater than X degrees,
+            # before the vertex is recorded anywhere (all_vertices, phi output, etc.)
+            if reco_offaxis_angle > 60:
+                NumberOfVerticesPerEvent.append(len(Vertices))
+                if len(Vertices) > 0:
+                    PairsFound += 1
+                EventCount += 1
+                continue
+
+            all_vertices.append(top_vertex)
+
+            theta_rad = np.radians(args.theta)
+            phi_rad = np.radians(args.phi)
+
+            u_mc = np.array([
+                np.sin(theta_rad) * np.cos(phi_rad),
+                np.sin(theta_rad) * np.sin(phi_rad),
+                np.cos(theta_rad)
+            ])
+            u_mc = u_mc / np.linalg.norm(u_mc)
+
+            cos_angle = np.clip(np.dot(u_rec, u_mc), -1.0, 1.0)
+            angle = np.degrees(np.arccos(cos_angle))
+
+            if angle is not None:
+                angle_output_file.write(f"{RE.GetEventID()} {angle}\n")
+
+            print(f"EID: {RE.GetEventID()} "
+                  f"| Final event vertex position: ({top_vertex.GetPosition()[0]:.6f}, {top_vertex.GetPosition()[1]:.6f}, {top_vertex.GetPosition()[2]:.6f}) "
+                  f"| event type: {top_vertex.vertex_type} "
+                  f"| gamma-ray direction: ({top_vertex.gamma_dir[0]:.6f}, {top_vertex.gamma_dir[1]:.6f}, {top_vertex.gamma_dir[2]:.6f})")
+            
+            hits_below = get_hits_in_layer_below(RE.GetEventID(), vertex_z, HTX, HTY, HTZ, interlayerdistance=interlayer_distance)
 
             # Projected point -> make function
             init_dir = initial_vector_function(args.theta, args.phi)
             
-            init_pos = np.array([
+            initial_pos = np.array([
                 top_vertex.GetPosition()[0],
                 top_vertex.GetPosition()[1],
                 vertex_z
             ])
 
-            z_target = vertex_z - 1.5 # cm (interlayer distance)
-            projected_point = project_to_layer(init_pos, init_dir, z_target)
+            z_target = vertex_z - interlayer_distance # cm (interlayer distance)
+            projected_point = project_to_layer(initial_pos, init_dir, z_target)
 
             '''
             if args.plot_distance_dist:
@@ -1408,14 +2057,14 @@ if __name__ == "__main__":
                 pass
             '''
             
-            phi = top_vertex.ComputePhi(theta = args.theta, phi = args.phi, hit1=top_vertex.AllRESEs[0], hit2=top_vertex.AllRESEs[1], ref_direction = args.ref_dir)
-            #if phi is not None:
-            event_id_list.append(RE.GetEventID())
-            phi_values.append(phi)
+            #phi = top_vertex.ComputePhi(theta = args.theta, phi = args.phi, hit1=top_vertex.AllRESEs[0], hit2=top_vertex.AllRESEs[1], ref_direction = args.ref_dir)
+            phi = top_vertex.ComputePhi_RelativeX(photon_dir = top_vertex.gamma_dir, hit1=top_vertex.AllRESEs[0], hit2=top_vertex.AllRESEs[1])
+            if phi is not None:
+                event_id_list.append(RE.GetEventID())
+                phi_values.append(phi)
 
         else:
             pass
-        
 
         NumberOfVerticesPerEvent.append(len(Vertices))
 
@@ -1432,9 +2081,11 @@ if __name__ == "__main__":
             phi_values.clear() # can remove if wanted
             event_id_list.clear()
             gc.collect()
-            print(f"Processed {EventCount} events...", flush=True)
+            #print(f"Processed {EventCount} events...", flush=True)
 
     # Compute true direction
+    angle_output_file.close()
+
     true_dir = initial_vector_function(args.theta, args.phi)
 
     all_angle_differences = []
@@ -1443,15 +2094,20 @@ if __name__ == "__main__":
     twoht_twoht_angles = []
 
     for vtx in all_vertices:
+        
+        if vtx.gamma_dir is None:
+            #print(f"WARNING: vertex missing gamma_dir | type: {getattr(vtx, 'vertex_type', 'unknown')}")
+            continue
+        
         cos_angle = np.clip(np.dot(vtx.gamma_dir, true_dir), -1.0, 1.0)
         angle_deg = np.degrees(np.arccos(cos_angle))
-
+        
         all_angle_differences.append(angle_deg)
 
         if hasattr(vtx, "vertex_type"):
             if vtx.vertex_type == "type_1ht2ht":
                 oneht_twoht_angles.append(angle_deg)
-            if vtx.vertex_type == "type_1ht1ht":
+            elif vtx.vertex_type == "type_1ht1ht":
                 oneht_oneht_angles.append(angle_deg)
             elif vtx.vertex_type == "type_2ht2ht":
                 twoht_twoht_angles.append(angle_deg)
@@ -1470,8 +2126,8 @@ if __name__ == "__main__":
             revan_angle = revan_angle_differences.tolist() # convert to list for histogramming
             EP.PlotGammaRayReconstructionHistogram(all_angle_differences, oneht_twoht_angles, oneht_oneht_angles, twoht_twoht_angles, revan_angles=revan_angle) # histogramming with revan info
         else:
-            EP.PlotGammaRayReconstructionHistogram(all_angle_differences, oneht_twoht_angles, oneht_oneht_angles, twoht_twoht_angles) # histogramming without revan info
-            #print("not plotting histogram")
+            #EP.PlotGammaRayReconstructionHistogram(all_angle_differences, oneht_twoht_angles, oneht_oneht_angles, twoht_twoht_angles) # histogramming without revan info
+            print("not plotting histogram")
 
         print("\n--------- OVERALL RECONSTRUCTION PERFORMANCE ---------")
         print("Total # of reconstructed events:", len(all_vertices))
