@@ -16,6 +16,7 @@ This software has the ability to do the following:
 
 ## The Pipeline
 Depending on the desired analysis, there are multiple ways to run the files in this software. Below is a flowchart that shows the options.
-<img width="830" height="618" alt="SUGaR Flowchart drawio" src="https://github.com/user-attachments/assets/53818118-dcc3-4611-a37b-21ec938b46c0" />
+<img width="3316" height="2472" alt="SUGaR Flowchart drawio (1)" src="https://github.com/user-attachments/assets/997007d4-0165-45fc-b37c-3b42a1b6941e" />
+
 
 
