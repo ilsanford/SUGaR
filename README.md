@@ -3,6 +3,10 @@
 ### A Python MEGAlib extension for improving gamma-ray reconstruction in the pair regime as well as performing pair regime polarimetry
 Python scripts designed to build off of existing MEGAlib software to perform analysis on gamma rays undergoing pair production in a detector. This performs vertex identification, gamma-ray direction reconstruction, and azimuthal angle computation (for polarimetry). Currently, this is specifically applied to the AMEGO-X geometry but parameters can be changed to adapt to different geometries.
 
+### File Locations
+Any simulation files that being used should be in the same directory as the files in this repository. For the SUGaR files to load the proper geometry, the AMEGO-X geometry setup file should be located here (starting from the directory containing the SUGaR files):
+''' ../Geometry/AMEGO_Midex/AmegoXBase.geo.setup '''
+
 ### The Pipeline
 1. Selecting the Monte Carlo pair events: *PairEventSelection.py* OR *PairEventSelection_MultipleFiles.py* -> If parallel runs are done (using mcosima), use the latter file for event filtering. If not, use the first. 
 2. Identifying vertices, computing azimuthal angles, and plotting: *VertexIDAndPlotting.py* -> Takes the file containing only pair events and computes the azimuthal angle for all identified events. The script also automatically applies detector effects and the option to implement a clustering algorithm (both are sourced from MEGAlib). See the file to know additional plotting options.
