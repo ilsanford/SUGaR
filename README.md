@@ -18,8 +18,4 @@ This software has the ability to do the following:
 Depending on the desired analysis, there are multiple ways to run the files in this software. Below is a flowchart that shows the options.
 <img width="830" height="618" alt="SUGaR Flowchart drawio" src="https://github.com/user-attachments/assets/53818118-dcc3-4611-a37b-21ec938b46c0" />
 
-## Additional Options
-If interested in the number of hits in a certain material as well as the modulation in that material, see the *HitsInMaterial.py* file. This file takes an input SIM file containing only pair events, extracts the locations of the pair conversions, and references that location with the corresponding material in that location from the geometry file to determine in which material the pair conversion occurred. Running this script will output a list of materials with the number of conversion in each and will also save a corresponding text file that contains event ID and associated material for that event's conversion.
-
-If looking to understand the modulation in a material, the azimuthal angles for all of the event IDs in the *HitsInMaterial.py* file are needed. The *MaterialVertexAnalysis.py* files does this by taking the output text file of event ID and material, filtering out event IDs only associated with the chosen material, referencing those event IDs to the original SIM file, and then performing azimuthal angle calculations on those events (using the process implemented in the *VertexIDAndPlotting.py* script). The output from this is a text file containing a list of phi values. This text file can then be passed into the *ModulationFit.py* script to get histograms and modulation values for pair conversions in a certain material.
 
