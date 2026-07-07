@@ -5,7 +5,7 @@ Python scripts designed to build off of existing MEGAlib software to perform ana
 
 ### File Locations
 Any simulation files that being used should be in the same directory as the files in this repository. For the SUGaR files to load the proper geometry, the AMEGO-X geometry setup file should be located here (starting from the directory containing the SUGaR files):
-''' ../Geometry/AMEGO_Midex/AmegoXBase.geo.setup '''
+``` ../Geometry/AMEGO_Midex/AmegoXBase.geo.setup```
 
 ### The Pipeline
 1. Selecting the Monte Carlo pair events: *PairEventSelection.py* OR *PairEventSelection_MultipleFiles.py* -> If parallel runs are done (using mcosima), use the latter file for event filtering. If not, use the first. 
