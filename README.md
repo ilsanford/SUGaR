@@ -15,9 +15,8 @@ This software has the ability to do the following:
   4. Determine if a conversion occured in dead/passive material. Analysis can then be run on just these events as well.
 
 ## The Pipeline
-1. Selecting the Monte Carlo pair events: *PairEventSelection.py* OR *PairEventSelection_MultipleFiles.py* -> If parallel runs are done (using mcosima), use the latter file for event filtering. If not, use the first. 
-2. Identifying vertices, computing azimuthal angles, and plotting: *VertexIDAndPlotting.py* -> Takes the file containing only pair events and computes the azimuthal angle for all identified events. The script also automatically applies detector effects and the option to implement a clustering algorithm (both are sourced from MEGAlib). See the file to know additional plotting options.
-3. Determining the modulation: *ModulationFit.py* -> Takes the output text file containing azimuthal angle values from the previous *VertexIDAndPlotting.py* script. Requires both a polarized and an unpolarized file for use. Plots a histogram of azimuthal angles for both and then computes their ratio, plots a histogram of that ratio, fits a sine curve to the data and extracts the fit parameters to determine the modulation.
+Depending on the desired analysis, there are multiple ways to run the files in this software. Below is a flowchart that shows the options.
+<img width="830" height="618" alt="SUGaR Flowchart drawio" src="https://github.com/user-attachments/assets/53818118-dcc3-4611-a37b-21ec938b46c0" />
 
 ## Additional Options
 If interested in the number of hits in a certain material as well as the modulation in that material, see the *HitsInMaterial.py* file. This file takes an input SIM file containing only pair events, extracts the locations of the pair conversions, and references that location with the corresponding material in that location from the geometry file to determine in which material the pair conversion occurred. Running this script will output a list of materials with the number of conversion in each and will also save a corresponding text file that contains event ID and associated material for that event's conversion.
